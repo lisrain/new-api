@@ -93,6 +93,15 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		}
 		sendResponsesStreamData(c, streamResponse, data)
 		accumulator.Observe(&streamResponse)
+		// Responses SSE has no "data: [DONE]" sentinel: after the terminal event
+		// the upstream simply idles until it closes the socket. Record completion
+		// here, otherwise the end reason is decided by a race between upstream EOF
+		// and the client closing its connection right after the final event, which
+		// mislabels a finished stream as client_gone (#6649). The WebSocket relay
+		// records the same reason in relay/responses_websocket.go.
+		if info.StreamStatus.ResponseOutcome() == string(relaycommon.ResponseOutcomeCompleted) {
+			sr.Done()
+		}
 	})
 
 	common.SetContextKey(c, constant.ContextKeyResponseStreamStatus, info.StreamStatus)
