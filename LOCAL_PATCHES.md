@@ -73,6 +73,16 @@ go test ./relay/channel/openai/ -run "MarksDoneOnCompleted" -v
 
 ## 6. 维护方式(重要)
 
+### 6.1 分支结构
+- **官方 release**:用官方 tag 原样保留,不做任何改动(如 `v1.0.0-rc.27` → `eb48396d`)。
+- **本地维护分支**:`lisrain/rcXX-patched`(当前 `lisrain/rc27-patched` → `0b16c372`),包含全部本地合入与自定义修复。
+- **官方发新 release(如 rc28/rc29)时的跟进流程**:
+  1. `git fetch origin` 拉取官方新 tag
+  2. 基于官方新 tag 建本地分支:`git switch -c lisrain/rc28-patched v1.0.0-rc.28`
+  3. 按需 cherry-pick 本地补丁:`5a6f7957`(#6808)、`6bb9ed81`(#6904)、`0b16c372`(fix6649 + 快速路径 + 文档);官方已合入的跳过对应 commit
+  4. 处理可能的冲突(尤其 `relay/helper/stream_scanner.go` 是本地改过的)
+  5. 递增 VERSION 序号 → 构建镜像 → 更新 compose
+
 **在官方合入 #6808 / #6904 之前**,每次部署新版本都需**在本分支基础上**:
 
 1. 以当前 HEAD(`v1.0.0-rc.27-1` 对应状态)为基
