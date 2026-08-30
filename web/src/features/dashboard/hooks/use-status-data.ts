@@ -70,5 +70,7 @@ export function useDashboardContentVisibility() {
     announcements: hasStatus && status?.announcements_enabled !== false,
     faq: hasStatus && status?.faq_enabled !== false,
     uptimeKuma: hasStatus && status?.uptime_kuma_enabled !== false,
+    // 设置引导默认显示（status 未加载时也显示，避免首屏闪动）
+    setupGuide: !status || status?.setup_guide_enabled !== false,
   }
 }
