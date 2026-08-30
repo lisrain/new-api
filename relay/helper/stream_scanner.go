@@ -31,6 +31,16 @@ const (
 	// but connected client (full TCP buffer, no server WriteTimeout) could hang
 	// the handler forever.
 	streamWriteTimeout = 30 * time.Second
+	// streamClientGoneGrace gives the scanner a short window to finish reading
+	// the upstream body end ([DONE]/EOF) after the client disconnects. A codex
+	// style client closes its socket right after the final SSE event, so the
+	// main select can win Context().Done() while the scanner still has a couple
+	// of reads left. Without this window the handler records client_gone and
+	// cleanup() immediately closes resp.Body, interrupting the scanner before
+	// it records the terminal reason it already reached. A genuine mid-stream
+	// disconnect never finishes within the window, so it still ends as
+	// client_gone (see issue #6649).
+	streamClientGoneGrace = 500 * time.Millisecond
 )
 
 func getScannerBufferSize() int {
@@ -89,6 +99,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 	var (
 		stopChan    = make(chan bool, 3) // 增加缓冲区避免阻塞
+		scannerDone = make(chan struct{}) // 由 scanner goroutine 退出时关闭
 		scanner     = NewStreamScanner(resp.Body)
 		ticker      = time.NewTicker(streamingTimeout)
 		pingTicker  *time.Ticker
@@ -228,6 +239,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	common.RelayCtxGo(ctx, func() {
 		defer func() {
 			close(dataChan)
+			close(scannerDone)
 			if r := recover(); r != nil {
 				logger.LogError(c, fmt.Sprintf("scanner goroutine panic: %v", r))
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonPanic, fmt.Errorf("scanner panic: %v", r))
@@ -295,11 +307,19 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	case <-stopChan:
 		// EndReason already set by the goroutine that triggered stopChan
 	case <-c.Request.Context().Done():
-		// 客户端断开：立即 cleanup 关闭上游 resp.Body，解除 scanner 阻塞并让上游停止生成，
-		// 避免为已放弃的请求继续消费上游 token。
-		// 若流其实已正常结束（scanner 已收到 [DONE]/EOF），不要降级为 client_gone。
+		// 客户端断开：给 scanner 一个极短窗口自然读完上游末尾（[DONE]/EOF）。
+		// codex 等客户端常在收到最后一个事件后立即关闭 socket，此时 scanner
+		// 可能已把全部数据转发、正在读流末尾。若直接判 client_gone 并关闭
+		// resp.Body，scanner 会被强制中断，正常完成的流被误标为错误
+		// （issue #6649 的残留竞争）。真中断时 scanner 读不到末尾，
+		// 窗口到期后判 client_gone，随后 cleanup 关闭 body 停止上游生成。
 		if !info.StreamStatus.IsNormalEnd() {
-			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
+			select {
+			case <-scannerDone:
+				// scanner 已自然结束，EndReason 保持其设置（Done/EOF/ScannerErr）
+			case <-time.After(streamClientGoneGrace):
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
+			}
 		}
 	}
 
