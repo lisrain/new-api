@@ -19,6 +19,27 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+func normalizeResponsesOutputItemAdded(data string, event dto.ResponsesStreamResponse) (string, error) {
+	if event.Type != dto.ResponsesOutputTypeItemAdded || event.Item == nil {
+		return data, nil
+	}
+
+	var missingCollectionPath string
+	switch event.Item.Type {
+	case "reasoning":
+		missingCollectionPath = "item.summary"
+	case "message":
+		missingCollectionPath = "item.content"
+	default:
+		return data, nil
+	}
+	if gjson.Get(data, missingCollectionPath).Exists() {
+		return data, nil
+	}
+
+	return sjson.SetRaw(data, missingCollectionPath, "[]")
+}
+
 func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	defer service.CloseResponseBodyGracefully(resp)
 
@@ -91,7 +112,18 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		if streamResponse.Response != nil {
 			data = string(rewriteSGLangResponsesCreatedAt(info, []byte(data), "response.created_at", streamResponse.Response.CreatedAt))
 		}
-		sendResponsesStreamData(c, streamResponse, data)
+		// Some Responses-compatible upstreams omit still-empty collections on
+		// response.output_item.added (reasoning without "summary", message
+		// without "content"). Strict clients such as codex drop the item and
+		// then reject every later delta for it, so fill in the empty arrays
+		// before forwarding (upstream PR #7088).
+		normalizedData, err := normalizeResponsesOutputItemAdded(data, streamResponse)
+		if err != nil {
+			logger.LogError(c, "failed to normalize responses output item: "+err.Error())
+			sr.Error(err)
+			return
+		}
+		sendResponsesStreamData(c, streamResponse, normalizedData)
 		accumulator.Observe(&streamResponse)
 		// Responses SSE has no "data: [DONE]" sentinel: after the terminal event
 		// the upstream simply idles until it closes the socket. Record completion
