@@ -467,6 +467,7 @@ export function OverviewDashboard() {
     announcements: showAnnouncementsPanel,
     faq: showFAQPanel,
     uptimeKuma: showUptimePanel,
+    setupGuide: setupGuideEnabled,
   } = useDashboardContentVisibility()
   const [manualSetupGuideExpanded, setManualSetupGuideExpanded] = useState<
     boolean | null
@@ -627,7 +628,7 @@ export function OverviewDashboard() {
     <SectionPageLayout>
       <SectionPageLayout.Title>{t('Overview')}</SectionPageLayout.Title>
       <SectionPageLayout.Actions>
-        {setupStatusReady && setupComplete && (
+        {setupGuideEnabled && setupStatusReady && setupComplete && (
           <Button
             ref={setupGuideToggleRef}
             variant='ghost'
@@ -643,8 +644,11 @@ export function OverviewDashboard() {
       </SectionPageLayout.Actions>
       <SectionPageLayout.Content>
         <div className='flex flex-col gap-4'>
-          <div id={setupGuideId} hidden={!setupGuideExpanded}>
-            {setupGuideExpanded && (
+          <div
+            id={setupGuideId}
+            hidden={!setupGuideExpanded || !setupGuideEnabled}
+          >
+            {setupGuideEnabled && setupGuideExpanded && (
               <CardStaggerContainer className='grid items-stretch gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]'>
                 <CardStaggerItem className='bg-card h-full overflow-hidden rounded-2xl border shadow-xs'>
                   <div className='relative h-full overflow-hidden p-4 sm:p-5'>
@@ -727,7 +731,7 @@ export function OverviewDashboard() {
               </CardStaggerContainer>
             )}
           </div>
-          {!setupGuideExpanded && !setupComplete && (
+          {setupGuideEnabled && !setupGuideExpanded && !setupComplete && (
             <CardStaggerContainer>
               <CardStaggerItem className='bg-card overflow-hidden rounded-2xl border shadow-xs'>
                 <div className='relative overflow-hidden px-4 py-3 sm:px-5'>
