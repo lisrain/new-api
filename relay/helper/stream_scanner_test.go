@@ -616,3 +616,136 @@ func TestStreamScannerHandler_CompletedStreamNotRelabeledClientGone(t *testing.T
 	assert.Equal(t, relaycommon.StreamEndReasonClientGone, s.EndReason)
 	assert.False(t, s.IsNormalEnd())
 }
+
+// TestStreamScannerHandler_CompletedStreamNotRelabeledOnClientGone covers the
+// residual race in issue #6649: a codex-style client closes its socket right
+// after the final SSE event, before the scanner has read the upstream body end
+// (EOF/[DONE]). All data was already forwarded (codex is happy, billing is
+// correct), so the stream must keep a normal end reason instead of being
+// relabeled client_gone. The handler gives the scanner a short grace window to
+// finish naturally rather than immediately closing the upstream body.
+func TestStreamScannerHandler_CompletedStreamNotRelabeledOnClientGone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pr, pw := io.Pipe()
+	t.Cleanup(func() {
+		_ = pr.Close()
+		_ = pw.Close()
+	})
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+
+	resp := &http.Response{Body: pr}
+	info := &relaycommon.RelayInfo{
+		DisablePing: true,
+		ChannelMeta: &relaycommon.ChannelMeta{},
+	}
+
+	lastChunkHandled := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+			_ = StringData(c, data)
+			if data == "last" {
+				close(lastChunkHandled)
+			}
+		})
+		close(done)
+	}()
+
+	// Upstream sends all data events; the terminal EOF has not arrived yet.
+	_, err := fmt.Fprint(pw, "data: first\ndata: last\n")
+	require.NoError(t, err)
+
+	select {
+	case <-lastChunkHandled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the last chunk to be forwarded")
+	}
+
+	// Client (codex) received the final event and closes the connection while
+	// the scanner is still blocked waiting for the upstream EOF.
+	cancel()
+
+	// Upstream EOF arrives right after the disconnect; the scanner must be
+	// allowed to read it and finish normally instead of being cut short.
+	_ = pw.Close()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return after disconnect")
+	}
+
+	require.NotNil(t, info.StreamStatus)
+	require.True(t, info.StreamStatus.IsNormalEnd(),
+		"completed stream must keep a normal end reason, got %q", info.StreamStatus.EndReason)
+	require.NotEqual(t, relaycommon.StreamEndReasonClientGone, info.StreamStatus.EndReason,
+		"completed stream must not be relabeled client_gone")
+}
+
+// TestStreamScannerHandler_CompletedStreamSkipsGraceOnClientGone pins the fast
+// path in the client-gone branch: when an adaptor already marked the stream
+// done (e.g. PR #6904 marks done on response.completed) and the client
+// disconnects while the scanner is still blocked waiting for an upstream EOF
+// that never arrives, the handler must return promptly instead of waiting out
+// the full grace period.
+func TestStreamScannerHandler_CompletedStreamSkipsGraceOnClientGone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pr, pw := io.Pipe()
+	t.Cleanup(func() {
+		_ = pr.Close()
+		_ = pw.Close()
+	})
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+
+	resp := &http.Response{Body: pr}
+	info := &relaycommon.RelayInfo{
+		DisablePing: true,
+		ChannelMeta: &relaycommon.ChannelMeta{},
+	}
+
+	markDone := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+			// 模拟适配器在终态事件（response.completed）时标记 done（如 PR #6904）。
+			sr.Done()
+			close(markDone)
+		})
+		close(done)
+	}()
+
+	_, err := fmt.Fprint(pw, "data: {\"type\":\"response.completed\"}\n")
+	require.NoError(t, err)
+
+	select {
+	case <-markDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for done marker")
+	}
+
+	// 客户端断开；上游保持连接 open，scanner 读不到 EOF。
+	cancel()
+
+	start := time.Now()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return after disconnect")
+	}
+	elapsed := time.Since(start)
+
+	// 快速路径必须避免等待满 grace 期。
+	require.Less(t, elapsed, streamClientGoneGrace/2,
+		"handler should return promptly once done is set, took %v", elapsed)
+	require.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+}
