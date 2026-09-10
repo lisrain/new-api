@@ -80,11 +80,29 @@
 ```bash
 # 1) 容器内跑后端回归测试 + relaykit 独立构建(临时 Dockerfile.test,用完即删)
 docker build -f Dockerfile.test -t newapi-test:rc36 .
-#    内部依次执行:
-#    go test ./relay/helper/...  -run "ClientGone|ClientCancel|CompletedStream|SkipsGrace" -v
-#    go test ./relay/channel/openai/ -run "MarksDoneOnCompleted" -v
-#    go test ./relay/common/... -count=1
-#    cd relaykit && go build ./...   (AGENTS.md 要求)
+#    Dockerfile.test 内容(重要:FROM/ENV/ARG/ADD/RUN 链必须与官方 Dockerfile 的
+#    builder2 阶段完全一致,go mod download 层才能与正式构建共享缓存;
+#    2026-09-10 rc.36 跟进时因 ENV 链不一致,测试与正式构建各下载了一份 ~1.5GB 模块):
+#
+#    FROM golang:1.26.1-alpine@sha256:2389ebfa5b7f43eeafbd6be0c3700cc46690ef842ad962f6c5bd6be49ed82039 AS builder2
+#    ENV GO111MODULE=on CGO_ENABLED=0 GOWORK=off
+#    ARG TARGETOS
+#    ARG TARGETARCH
+#    ENV GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64}
+#    ENV GOEXPERIMENT=greenteagc
+#    WORKDIR /build
+#    ADD go.mod go.sum ./
+#    ADD relaykit/go.mod ./relaykit/go.mod
+#    RUN go mod download
+#    COPY . .
+#    RUN go test ./relay/helper/...  -run "ClientGone|ClientCancel|CompletedStream|SkipsGrace" -v \
+#     && go test ./relay/channel/openai/ -run "MarksDoneOnCompleted" -v \
+#     && go test ./relay/common/... -count=1 \
+#     && cd relaykit && go build ./...   (AGENTS.md 要求)
+#
+#    注意:上游发版若改了 go.mod/go.sum,go mod download 必然重新下载(层缓存失效),属正常现象。
+#    测试镜像(newapi-test:*)用完即删(约 2.8GB);构建缓存可用
+#    docker builder prune -a -f --filter until=48h 定期清理。
 
 # 2) 构建正式镜像(前端 bun build + 后端 go build 全量编译)
 docker build -t calciumion/new-api:v1.0.0-rc.36-1 .
