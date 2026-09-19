@@ -8,8 +8,8 @@
 ## 1. 当前版本与命名方案
 
 - 镜像 tag / VERSION 采用 **`v1.0.0-rc.38-<序号>`** 增量命名,每次在此分支上新增改动后构建,序号递增。
-- 当前为 **`v1.0.0-rc.38-1`**(基于官方 rc.38,合入 PR 6808 + PR 6904 + fix6649 + 快速路径 + 概览页设置引导开关 + 构建换行修复)。
-- **2026-09-19 本次跟进未编译镜像**:仅拉取代码、完成补丁存废判定与合入、同步文档。构建与冒烟步骤见第 5 节,下次直接执行即可。
+- 当前为 **`v1.0.0-rc.38-1`**(基于官方 rc.38,合入 PR 6808 + PR 6904 + PR 7088 + fix6649 + 快速路径 + #7178 写入守卫 + 概览页设置引导开关 + 构建换行修复)。
+- **2026-09-19 镜像尚未构建**:当日两次跟进——第一次拉取 rc.38、完成补丁存废判定与合入;第二次按第 7 节评估结论合入 PR #7088 与 #7178 的写入守卫(见 2.3、3.5),后端回归测试已在 docker 内通过(第 5 节)。`v1.0.0-rc.38-1` 尚未 `docker build`,compose 仍指向 `rc.36-1`;下次直接执行第 5 节的构建与冒烟即可,无需再递增序号。
 - **跟进记录**: rc.32 → rc.36 → rc.38(本次跨官方 rc.37、rc.38 两个 release)。
 
 ### 1.1 rc.38 补丁存废判定(2026-09-19)
@@ -75,6 +75,16 @@
 - **解决的问题**: `/v1/responses` 的 SSE 没有 `data: [DONE]` 哨兵,上游发完终态事件后静默直到自己关连接;适配器层主动标记 `done`,不再依赖上游 EOF 与客户端关闭的赛跑。**治本修复**(上游连接不关闭时也有效)。
 - **兼容注意**: 官方 rc.32(#7137)已把 usage 归一改为 `relayconvert.NormalizeResponsesUsage` + `dto.MergeUsageNonZero`;rc.38 进一步搬进 `service.ApplyResponsesUsage`。本补丁只补终态标记,与上述重构共存;回归测试在官方新累加器代码上通过。
 
+### 2.3 PR #7088 — Responses `output_item.added` 补齐空集合(codex 兼容)
+- **上游状态**: OPEN(与 main 冲突,作者 @DoubleMice,2026-08-30;关联 issue #7087)
+- **rc.38 分支 cherry-pick(已迁移)**: `eb6c5cab1`(源 commit `ff3418a1e`,`-x` 标注)
+- **背景**: 部分 Responses 兼容上游(第三方 new-api 中转站等)在 `response.output_item.added` 阶段省略尚为空的集合字段——reasoning item 缺 `summary`,message item 缺 `content`。codex 按 OpenAI Responses item schema 严格反序列化,会丢弃该 item,随后的 `ReasoningSummaryDelta` / `OutputTextDelta` 全部报 "without active item"。**本机场景正是 codex → 本地 new-api → 第三方 new-api(Responses 上游)**,直接命中。
+- **改动**: `relay/channel/openai/relay_responses.go` 新增 `normalizeResponsesOutputItemAdded`,只在键缺失时用 sjson 补 `"summary": []` / `"content": []`,已有字段、其他 item 类型、`sequence_number` 均不动;gjson/sjson 已在 go.mod。`OaiResponsesStreamHandler` 在 `sendResponsesStreamData` 前调用。
+- **rc.38 迁移**: 原 PR 的 hunk 落在被官方删除的事件 switch 上,cherry-pick 冲突;手工保留 rc.38 的 `accumulator.Observe` 结构,把规范化调用插在发送之前、本地 #6904 终态标记之前(同一闭包内,互不影响)。
+- **不影响的路径**: relaykit 的 chat→responses 转换路径(`to_oai_responses_resp.go`)自带这两个数组;WebSocket 中继(`relay/responses_websocket.go`)未改,codex 走 HTTP SSE。
+- **测试**: `relay/channel/openai/relay_responses_compat_test.go`(`TestOaiResponsesStreamHandlerAddsMissingItemCollections`,直接沿用,复用本地已有的 `newResponsesChatTestContext`)
+- **退役条件**: 官方合入 #7088 或等价规范化后跳过此 commit。
+
 ---
 
 ## 3. 本地自定义修复(上游无此改动)
@@ -128,6 +138,15 @@
   ```
 - **升级注意**: 这两行追加在 `.gitattributes` 的 Shell scripts 段之后;官方后续若修改该文件,注意保留。仓库内无 `.bat`/`.cmd`/`.ps1`,因此不存在必须保留 CRLF 的文件。
 
+### 3.5 写入守卫:客户端已断开时下行写入返回 nil(借自 PR #7178,修 fix6649 副作用)
+- **rc.38 分支 commit**: `a9a2c6d97`
+- **文件**: `relay/helper/common.go`(`StringData`、`ResponseChunkData` 两处 `requestContextDone` 分支由返回 `request context done` 错误改为返回 `nil`),`relay/helper/stream_scanner_test.go`(回归测试)
+- **来源**: 只借用 PR #7178 的 `helper/common.go` 两处改动,**不采纳其 60s drain**(见第 7 节)。改后与官方已有的 `ClaudeData` / `ClaudeChunkData`(上下文取消时静默返回)语义一致。
+- **修的问题**: fix6649 的 500ms 宽限期让 scanner 在客户端断开后继续把上游 chunk 交给 dataHandler。**在回调里直写客户端并把写失败视为致命**的适配器(`relay/channel/claude/relay-claude.go` 的 `sr.Stop(err)`、`relay/channel/openai/relay_image.go` 的 `sr.Stop(err)`)会把"客户端主动断开"变成 `HandlerStop` + `RecordError`,于是 `pkg/perf_metrics.ClassifyRelayOutcome` 从 `Ignored` 改判 `Failure`,污染渠道健康度。守卫后写入被静默丢弃,流按宽限期到期记 `client_gone`,无错误记录。
+- **影响面核对**(2026-09-19): 改动的两个函数在 `relay/` 内共 20 余处调用。在 `StreamScannerHandler` 回调内且对错误做 `sr.Stop/Error` 的只有 claude、image、audio、baidu、dify、xai;非 scanner 的自有循环(tencent、cloudflare、cohere、zhipu、ollama)只打日志或忽略返回值;`HandleFinalResponse` / `Done` 本就忽略返回值。此外 `relay/responses_websocket.go` 不经这两个函数。`ClassifyRelayOutcome` 收到的是 `c.Request.Context()`,客户端取消时本就先返回 `Ignored`,守卫只是让 `StreamStatus` 也不再留下误导性的 `handler_stop`。
+- **测试**: `TestStreamScannerHandler_ClientGoneWriteInGraceIsNotHandlerStop`——客户端断开后宽限期内上游再来一个 chunk,回调按 image/claude 的模式对写失败 `sr.Stop`;守卫前该用例实测失败(`handler_stop` + `HasErrors`),守卫后 `client_gone` 且无错误,断开后不再向客户端写任何字节。
+- **退役条件**: 官方合入 #7178(含此改动)或 #7419(`streamDiagnosticWriter` 覆盖同一场景)后按官方版本处理。
+
 ---
 
 ## 4. 三层防线(针对 client_gone 误标)
@@ -139,6 +158,8 @@
 | override 纠正 | PR #6808 | 正常完成纠正早先的 client_gone 记录 |
 
 > 官方 rc.38 的 `ResponseOutcome` 分类是**第四层、但只服务于渠道健康指标**(`pkg/perf_metrics`),不修正 `EndReason`,故不能替代上表任何一层。
+
+> 3.5 的写入守卫不在这条链上,但为该链收尾:grace 宽限期会让 scanner 在客户端断开后继续回调 dataHandler,守卫保证此时的下行写入不会把 `ClientGone` 变成 `HandlerStop`(见 3.5)。
 
 ---
 
@@ -164,11 +185,18 @@ docker build -f Dockerfile.test -t newapi-test:rc38 .
 #    ADD relaykit/go.mod ./relaykit/go.mod
 #    RUN go mod download
 #    COPY . .
-#    RUN go test ./relay/helper/...  -run "ClientGone|ClientCancel|CompletedStream|SkipsGrace" -v \
-#     && go test ./relay/channel/openai/ -run "MarksDoneOnCompleted" -v \
+#    RUN go test ./relay/helper/... -run "ClientGone|ClientCancel|CompletedStream|SkipsGrace|HandlerStop" -count=1 -v \
+#     && go test ./relay/channel/openai/ -run "MarksDoneOnCompleted|AddsMissingItemCollections|ResponsesToChatStream|ImageStream" -count=1 -v \
+#     && go test ./relay/channel/openai/ ./relay/channel/claude/ ./relay/channel/gemini/ ./relay/ -count=1 \
 #     && go test ./relay/common/... -count=1 \
 #     && go test ./service -run "ResponsesUsage" -count=1 \
 #     && cd relaykit && go build ./...   (AGENTS.md 要求)
+#
+#    2026-09-19 第二次跟进起,本机 Go 已升到 1.27(项目 go.mod 为 1.25.1,官方镜像 1.26.1),
+#    上述 go test 可先在本机快速跑通(约 1 分钟),docker 内再跑一遍作为正式验证;
+#    `go test ./relay/...` 全量在 Windows 本机会因 relay/channel 的 HTTP/2 GOAWAY 用例
+#    (wsarecv 平台差异)失败,与本地补丁无关,以 docker 结果为准。
+#    go mod download 偶发 proxy.golang.org EOF(网络),重跑即可。
 #
 #    注意:rc.38 引入了 WebSocket 中继与请求策略,`go test ./service` 会比 rc.36 慢;
 #    上游发版若改了 go.mod/go.sum,go mod download 必然重新下载(层缓存失效),属正常现象。
@@ -195,7 +223,9 @@ docker rm -f newapi-smoke
 - **本地维护分支**:`lisrain/rcXX-patched`。当前 `lisrain/rc38-patched`,包含全部本地合入与自定义修复:
   - `2eeb86632` merge PR #6808(上游 OPEN)
   - `52cc078e9` merge PR #6904(上游 OPEN,**已迁移到官方新累加器结构**)
+  - `eb6c5cab1` merge PR #7088(上游 OPEN,**已迁移到官方新累加器结构**,codex 兼容)
   - `e0e87961e` fix6649 + 快速路径 + 回归测试(本地自定义,上游无)
+  - `a9a2c6d97` 写入守卫(借自 PR #7178 两处改动,修 fix6649 副作用,上游未合入)
   - `cdcdd9c4d` 概览页设置引导开关(本地功能,上游无)
   - `82ac1b9c8` 概览开关错误处理对齐官方 `handleServerError` 约定(本地,上游无)
   - `cdf0109a1` 固定 `VERSION` / `Dockerfile*` 为 LF(本地,上游无)
@@ -205,24 +235,25 @@ docker rm -f newapi-smoke
 - 历史分支 `lisrain/rc30-patched`(→ `b0e476a0`,基于 rc.30,含 4 补丁)已删除,备份 tag **`backup/lisrain-rc30-patched`**(指向 `b0e476a0`)可随时恢复。
 - 历史分支 `lisrain/rc27-patched`(→ `89ea2020`,基于 rc.27)已删除,备份 tag **`backup/lisrain-rc27-patched`**(指向 `89ea2020`)可随时恢复。
 
-**在官方合入 #6808 / #6904 之前**,每次部署新版本都需**在本分支基础上**:
+**在官方合入 #6808 / #6904 / #7088 之前**,每次部署新版本都需**在本分支基础上**:
 
 1. 以当前 HEAD 为基
 2. 手动 `git merge`/`cherry-pick` 需要的上游 PR 分支(`gh pr diff <n>` 或 fetch `refs/pull/<n>/head`)
-3. 保留本地 `relay/helper/stream_scanner.go` 的自定义改动(fix6649 + 快速路径)——与上游 PR 不冲突(不同文件)
+3. 保留本地 `relay/helper/stream_scanner.go`(fix6649 + 快速路径)与 `relay/helper/common.go`(写入守卫)的自定义改动——与上游 PR 不冲突(不同文件)
 4. `echo "v1.0.0-rc.38-N" > VERSION`(序号递增)→ `docker build -t calciumion/new-api:v1.0.0-rc.38-N .`
 5. 更新 `C:\Users\Lenovo\Desktop\AIProxy\newapi\docker-compose.yml` 的 `image:` 引用
 
-**待官方将 #6808、#6904 合入 main 后**,可直接切到官方新 release 基线,届时本地的 stream_scanner 自定义改动可作为对比参考逐步收敛。工作区保持干净。
+**待官方将 #6808、#6904、#7088 合入 main 后**,可直接切到官方新 release 基线,届时本地的 stream_scanner 自定义改动可作为对比参考逐步收敛。工作区保持干净。
 
 ### 6.2 官方发新 release(如 rc.39)时的跟进流程
 1. `git fetch origin --tags` 拉取官方新 tag
 2. 基于官方新 tag 建本地分支:`git switch -c lisrain/rc39-patched v1.0.0-rc.39`
-3. 按需 cherry-pick 本地补丁(以下 rc.38 分支 hash):`2eeb86632`(#6808)、`52cc078e9`(#6904)、`e0e87961e`(fix6649 + 快速路径)、`cdcdd9c4d`(概览页设置引导开关)、`82ac1b9c8`(错误处理对齐)、`cdf0109a1`(构建换行);官方已合入的跳过对应 commit
+3. 按需 cherry-pick 本地补丁(以下 rc.38 分支 hash):`2eeb86632`(#6808)、`52cc078e9`(#6904)、`eb6c5cab1`(#7088)、`e0e87961e`(fix6649 + 快速路径)、`a9a2c6d97`(写入守卫)、`cdcdd9c4d`(概览页设置引导开关)、`82ac1b9c8`(错误处理对齐)、`cdf0109a1`(构建换行);官方已合入的跳过对应 commit
 4. 处理可能的冲突,重点核对:
    - `relay/helper/stream_scanner.go` —— 本地改过主 select 与 scanner 错误分支;官方若动 `client_gone` 分支或退出时序需重新评估
    - `relay/common/stream_status.go` —— 本地把 `endOnce` 换成了 `mu + reasonSet`;官方持续在加 `ResponseOutcome` 系列方法,**若官方把 `SetEndReason` 也改成可覆盖,则 #6808 可退役**
-   - `relay/channel/openai/relay_responses.go` —— 若官方再次重构事件处理,**重放 2.2 的终态标记**;若官方自行给 HTTP SSE 路径补上 `SetEndReason(Done)`(参照其 WS 路径),则 #6904 可退役
+   - `relay/channel/openai/relay_responses.go` —— 若官方再次重构事件处理,**重放 2.2 的终态标记与 2.3 的 `normalizeResponsesOutputItemAdded` 调用**(二者在同一闭包内);若官方自行给 HTTP SSE 路径补上 `SetEndReason(Done)`(参照其 WS 路径),则 #6904 可退役;官方合入 #7088 则跳过 2.3
+   - `relay/helper/common.go` —— 本地把 `StringData` / `ResponseChunkData` 的上下文取消分支改为返回 nil;#7178、#7419 都会改此文件,谁先合入都要重新核对 3.5 是否仍需保留
    - `controller/misc.go` —— 官方若在 status map 新增键,注意与 `setup_guide_enabled` 的上下文合并
    - `overview-dashboard.tsx` —— 官方若继续重构概览页,**保留四处 `setupGuideEnabled` 守卫**
    - `system-settings/{types.ts, hooks/use-update-option.ts}` —— 官方改动频繁,注意 `setup_guide_enabled` 键与 STATUS_RELATED_KEYS 条目的存活
@@ -233,26 +264,27 @@ docker rm -f newapi-smoke
 
 ## 7. 其他值得关注的上游开放 PR(未合入,按需评估)
 
-> 2026-09-19 复查(rc.38 跟进):以下除注明外仍全部 OPEN,官方 rc.38 均未吸收。
+> 2026-09-19 第二次复查(基于每个 PR 的完整 diff 与本地代码逐一对照;`origin/main` 当时领先 rc.38 七个提交,均未触及下列落点):**#7088 已合入(2.3),#7178 的写入守卫已借用(3.5)**,其余维持 OPEN、未合入本地。部署形态为单用户本地网关(codex → 本地 new-api → 第三方 new-api Responses 上游),不使用订阅、不启用分组限流,评估以此为前提。
 
-- **#6951** `fix(openai): 正确结束 Responses 流` —— **与本地 #6904 同源同方案**(终态事件后立即结束流,避免误记 `client_gone`),官方未吸收。经 2026-09-19 逐行核对,其写法(`sr.Done()` 挂在 `case "response.completed", "response.done":` 分支末尾)与本地 #6904 原版**完全一致,无更优之处**;本地迁移到 `ResponseOutcome()` 的版本更贴合 rc.38 新累加器结构。若该 PR 合入,可与 #6904 一并退役。
-- **#7178** `fix(relay): drain upstream after client_gone to collect final usage` —— **与本地 fix6649 同落点**(`StreamScannerHandler` 主 select 的 `client_gone` 分支),但方案更完整,是本地宽限期的**候选升级方向**:
-  - 引入可配置超时 `CLIENT_GONE_DRAIN_TIMEOUT`(默认 60s,`0` 表示立即关闭上游 = 旧行为),而本地是固定 `streamClientGoneGrace = 500ms`;
-  - **配套修掉了本地宽限期的一个副作用**:drain 期间 `helper.StringData` / `ResponseChunkData` 在请求上下文已取消时**返回 `nil` 而非错误**,避免"写已断开的客户端"产生 soft error;
-  - 目标更根本——拿到上游真实 usage(直接对治 issue #7062 的计费不一致),而非仅仅让 `EndReason` 正确;含完整回归测试 `TestStreamScannerHandler_ClientGoneDrainsUntilFinalUsage`。
-  - **注意二者是同落点的竞争关系,只能二选一,不能叠加**;且默认 60s 窗口在用户主动取消长对话时会显著增加上游 token 消耗。
-- **#7419** `fix(relay): correctly label estimated Responses stream usage`(2026-09-17,核心开发者 @seefs001)—— rc.38 之后提交,**改动文件几乎覆盖本地全部补丁落点**(`stream_status.go`/`stream_scanner.go`/`helper/common.go`/`stream_result.go`/`responses_websocket.go`/`responses_usage.go`/`log_info_generate.go`),但经 2026-09-19 核对:
-  - **不影响本地补丁的必要性**——它**保留了 `endOnce sync.Once`**(即不采纳 #6808 的"正常完成可覆盖 `client_gone`"),也**未改主 select 的 `client_gone` 分支逻辑**(仅给错误参数包上来源标记),更**未在 HTTP SSE 路径加终态标记**;
-  - 其核心是**流错误诊断**:新增 `streamDiagnosticWriter` 包装 `c.Writer` 记录下行写失败、`WithStreamErrorSource` 标记错误来源(`downstream_write`/`upstream_read`/`request_context`/`stream_idle_timeout`)、`describeStreamError` 归类错误码;
-  - `streamDiagnosticWriter` 恰好覆盖本地 fix6649 的一个副作用(见下方"已知副作用"),其注释明确"不替换终态原因、不影响计费";
-  - 若该 PR 合入,本地 #6808 需重新适配(`SetEndReason` 内会多出 `EndErrorCode`/`EndErrorSource` 赋值);`ResponsesUsageAccumulator.Finish()` 签名将变为 `Finish(c *gin.Context)`,与本地 #6904 的 `sr.Done()` 相邻但不冲突。
-- **已核对的本地已知副作用(2026-09-19,代码推导,未实测)**:fix6649 的 500ms 宽限期让 scanner 在客户端断开后多跑一会儿。对**在 dataHandler 回调里直接写客户端**的适配器(`relay/channel/claude/relay-claude.go:306`、`relay/channel/openai/relay_image.go:168`),宽限期内写失败会触发 `sr.Stop(err)` → `SetEndReason(HandlerStop)` + `RecordError`。由于 `IsNormalEnd()` 认可 `HandlerStop`,宽限期逻辑被绕过,且 `HasErrors` 变为 true、`EndReason` 不再是 `ClientGone`,导致 `pkg/perf_metrics.ClassifyRelayOutcome` **不再走 `OutcomeIgnored`,改判 `OutcomeFailure`** —— 即"客户端主动断开"被计入渠道健康失败样本(不会直接禁用渠道,但污染健康度,进而影响 rc.38 的 channel health 路由决策)。修复前该场景为 `ClientGone` → `Ignored`(正确)。**OpenAI chat 路径不受影响**(其写发生在 `StreamScannerHandler` 返回后的 `handleLastResponse`,不在回调内);**Responses 路径亦不受影响**(#6904 的 `sr.Done()` 已在终态事件后停止 handler)。待观察 #7178 / #7419 的落地情况再决定是否调整。
-- **#7066** 上游流中途失败时向客户端发终态错误事件
-- **#6960** 模型限流器隔离与按 group 作用域计数(稳定性)
-- **#6913** / **#6979** 订阅计费修复
-- **#7088** Responses item 集合规范化
-- **#7033** SSE 帧立即转发(首字延迟优化)
-- **#6927** 记录异常流中断到错误日志
+- ~~**#7088** Responses item 集合规范化~~ —— **已合入本地**,见 2.3。
+- **#6951** `fix(openai): 正确结束 Responses 流` —— **与本地 #6904 同源同方案**(终态事件后立即结束流,避免误记 `client_gone`),官方未吸收。经 2026-09-19 逐行核对,其写法(`sr.Done()` 挂在 `case "response.completed", "response.done":` 分支末尾)与本地 #6904 原版**完全一致,无更优之处**;本地迁移到 `ResponseOutcome()` 的版本更贴合 rc.38 新累加器结构。8 月 30 日后无更新。若该 PR 合入,可与 #6904 一并退役。
+- **#7178** `fix(relay): drain upstream after client_gone to collect final usage` —— **与本地 fix6649 同落点**(`StreamScannerHandler` 主 select 的 `client_gone` 分支),只能二选一,不能叠加。2026-09-19 第二次核对:
+  - 等待信号等价——它等 `stopChan`,本地等 `scannerDone`,scanner goroutine 退出时两者都会关闭;差异只在窗口长度(可配置 `CLIENT_GONE_DRAIN_TIMEOUT` 默认 60s vs 本地固定 500ms)和写入守卫。
+  - **写入守卫已借用**(3.5)。drain 部分**不采纳**:rc.38 已合入 #7427,Responses 断流有估算,chat 断流走文本估算,不会记 0;它换来的是估算变精确,代价是用户主动取消后上游最多再跑一分钟 token。若日后要采纳,建议超时设 1~2s 并保留本地快速路径。
+  - 与 #7419 同样在 `helper/common.go` 与 `stream_scanner.go` 相撞,谁先合谁得 rebase。
+- **#7419** `fix(relay): correctly label estimated Responses stream usage`(2026-09-17,核心开发者 @seefs001,与 main 冲突待作者 rebase)—— **改动文件几乎覆盖本地全部补丁落点**(`stream_status.go`/`stream_scanner.go`/`helper/common.go`/`stream_result.go`/`responses_websocket.go`/`responses_usage.go`/`log_info_generate.go`),但:
+  - **不影响本地补丁的必要性**——它**保留了 `endOnce sync.Once`**(不采纳 #6808 的"正常完成可覆盖 `client_gone`"),也**未改主 select 的 `client_gone` 分支逻辑**(仅给错误参数包上来源标记),更**未在 HTTP SSE 路径加终态标记**;
+  - 其核心是**流错误诊断**:新增 `streamDiagnosticWriter` 包装 `c.Writer` 记录下行写失败、`WithStreamErrorSource` 标记错误来源(`downstream_write`/`upstream_read`/`request_context`/`stream_idle_timeout`)、`describeStreamError` 归类错误码,并把错误码与来源写进消费日志详情;
+  - `streamDiagnosticWriter` 与本地 3.5 覆盖同一场景,其注释明确"不替换终态原因、不影响计费";
+  - **不本地合入**,收益只是诊断信息,却要同时改 #6808、fix6649、3.5、#6904 四处。核心开发者提交,大概率进 rc.39 之后;若合入,本地 #6808 需重新适配(`SetEndReason` 内会多出 `EndErrorCode`/`EndErrorSource` 赋值),`ResponsesUsageAccumulator.Finish()` 签名将变为 `Finish(c *gin.Context)`,与本地 #6904 的 `sr.Done()` 相邻但不冲突。
+- **#6960** `fix(rate-limit): isolate model rate limiter and scope counter keys by group`(与 main 冲突)—— rc.38 已把内存路径改成预留式计数(`Reserve/Complete`)并识别 `ResponseFailed`,但 PR 指出的两个根因仍在:计数 key 仍是 `userId` 不带 group;内存路径仍每请求调用共享单例 `Init`。本地 compose 启用 Redis,实际走 Redis 分支,该 hunk 只是 key 拼接加 group 可直接用;内存分支 diff 基于旧代码需重做(其零值守卫 rc.38 已有)。**只有后台开启模型限流、不同 group 配了不同限额、且同一用户持有多 group 令牌时才触发**;本地单用户网关不满足,**不合入**。key 变更后旧 Redis key 自然过期,无需迁移。
+- **#6927** `修复:记录异常流中断到错误日志`(可合并)—— scanner 出错且客户端未断时 `RecordError`,流异常结束时写 type=5 错误日志,纯 `client_gone` 不写;`relay/helper` 已 import `service`,无循环依赖。本地 `ERROR_LOG_ENABLED=true`,收益是 `scanner_error`/`timeout`/`panic` 进后台错误日志页。**暂不合入**:落点正是 #6808 改过的 scanner 错误分支要手工重放;#7419 落地后会把错误码与来源写进消费日志详情,观测价值被部分覆盖。可选、低优先级。
+- **#7066** `fix(relay): emit terminal error event when upstream stream fails mid-flight`(与 main 冲突,关联 issue #7059 仍 OPEN)—— 思路对但实现有三个问题,**不合入**:(1) 在 `/v1/responses` 路径发的是 `chat.completion.chunk` 形状的错误块而非 `response.failed`,codex 认不出(CodeRabbit 亦指出);(2) chat 路径命中后提前 `return usage, nil`,跳过了 rc.38 的文本估算、`applyUsagePostProcessing` 和工具调用计费,上游没发 usage 时返回空 usage,已转发的部分内容计 0 费,与 PR 描述"计费不受影响"不符;(3) `client_gone` 也算异常,会向已断开的客户端写错误块(无害但多余)。除非改落点并给 Responses 补 `response.failed`,否则不建议合。
+- **#7033** `fix(relay): forward SSE frames immediately instead of lagging one frame behind`(与 main 冲突,作者 9/15 仍在更新)—— 收益是首字延迟:当前第 N 帧要等第 N+1 帧到达才下发,对先发 role 空帧再长时间静默的上游可感知;issue #7005 用两级网关串联量化了偏差,**本机恰好是两级 new-api 串联**,滞后会叠加。风险在于这是 chat 最热路径,rc.38 已在此函数加了 `RequireTerminal`、倒数第二帧 usage 回退、`applyUsagePostProcessing`、`observeStreamChoices`,PR 删掉的 `shouldSendLastResp` 逻辑在 rc.38 仍在且被上述改动依赖,需整体重写;行为变化:带 `choices` 与 `usage` 的终止帧原来会被吞,改后会发给未请求 usage 的客户端。**暂不合入**,等上游吸收;codex 走 Responses 路径不受此影响(Responses handler 本就逐帧直发)。
+- **#6913** `fix(billing): 订阅最终结算溢出时扣除钱包差额`(与 main 冲突,关联 issue #6911 仍 OPEN)—— rc.38 的 `PostConsumeUserSubscriptionDelta` 在已用超过总额时直接报错,资金来源层原样透传,`wallet_quota_deducted` 硬编码 0,漏洞仍在:预扣成功后实际消费超出订阅剩余额度时结算失败,超出部分没人扣。PR 在同一事务里扣满订阅、差额扣钱包并拆分日志;CodeRabbit 标的 int64 溢出实际不可达(delta 来自 int32 饱和后的差值)。SQL 为方言中性 GORM 表达式,但 AGENTS.md 要求三库实测,PR 只跑了 SQLite。**本地不使用订阅,不合入**。
+- **#6979** `fix(subscription): 同套餐续费从当前周期结束时刻接续`(可合并,是唯一能直接 apply 到本地分支的 PR;关联 issue #6978 仍 OPEN)—— 把同套餐未到期时再次购买改为排队接续,评论区已有人指出"额度用尽想立即恢复"的用户会被迫排队,维护者尚未表态,属产品设计决策而非纯 bug。**本地不使用订阅,不合入**;用订阅也建议等官方定夺。
 - ~~#7092 codex 非法工具调用导致"继续就断流"(relaykit)~~ — **已 CLOSED**(未合并)
 - ~~#7195 `fix(responses): preserve pre-consume when streamed output lacks usage`~~ — **已 CLOSED**,被官方 #7427 取代(rc.38 已合入)
 - ~~issue #7062 流式请求中 client_gone 导致计费为 0~~ — **已 CLOSED**,Responses 入站路径由 #7427 修复;其中"Chat Completions 经 Responses 转换"的链路官方注明**另行处理**,尚无对应 PR
+
+**fix6649 已知副作用的处置(2026-09-19)**:第一次跟进记录的"宽限期内回调直写客户端触发 `HandlerStop`,把客户端断开计入渠道健康 failure"(涉及 `relay-claude.go`、`relay_image.go`)已由 3.5 的写入守卫修复,并有回归测试实测覆盖(守卫前失败、守卫后通过)。
