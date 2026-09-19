@@ -22,6 +22,13 @@
 # Shell scripts
 *.sh text eol=lf
 
+# Docker build inputs: with core.autocrlf=true these are otherwise checked out
+# as CRLF, which leaks a trailing \r into the version string injected from
+# VERSION (Dockerfile ldflags and the frontend build) and into the build
+# instructions themselves.
+Dockerfile* text eol=lf
+VERSION text eol=lf
+
 # Binary files
 *.png binary
 *.jpg binary
