@@ -86,7 +86,11 @@ func ClaudeChunkData(c *gin.Context, resp dto.ClaudeResponse, data string) {
 
 func ResponseChunkData(c *gin.Context, resp dto.ResponsesStreamResponse, data string) error {
 	if requestContextDone(c) {
-		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
+		// The client is gone; the scanner may still be draining the upstream
+		// tail (grace window in StreamScannerHandler). Dropping the write
+		// silently keeps the end reason client_gone instead of turning the
+		// disconnect into a handler_stop error (upstream PR #7178).
+		return nil
 	}
 
 	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
@@ -100,7 +104,8 @@ func StringData(c *gin.Context, str string) error {
 	}
 
 	if requestContextDone(c) {
-		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
+		// Same as ResponseChunkData: a disconnected client is not a write error.
+		return nil
 	}
 
 	c.Render(-1, common.CustomEvent{Data: "data: " + str})
