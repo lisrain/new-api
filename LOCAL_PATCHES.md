@@ -8,7 +8,7 @@
 ## 1. 当前版本与命名方案
 
 - 镜像 tag / VERSION 采用 **`v1.0.0-rc.38-<序号>`** 增量命名,每次在此分支上新增改动后构建,序号递增。
-- 当前为 **`v1.0.0-rc.38-1`**(基于官方 rc.38,合入 PR 6808 + PR 6904 + fix6649 + 快速路径 + 概览页设置引导开关)。
+- 当前为 **`v1.0.0-rc.38-1`**(基于官方 rc.38,合入 PR 6808 + PR 6904 + fix6649 + 快速路径 + 概览页设置引导开关 + 构建换行修复)。
 - **2026-09-19 本次跟进未编译镜像**:仅拉取代码、完成补丁存废判定与合入、同步文档。构建与冒烟步骤见第 5 节,下次直接执行即可。
 - **跟进记录**: rc.32 → rc.36 → rc.38(本次跨官方 rc.37、rc.38 两个 release)。
 
@@ -107,6 +107,27 @@
 - **规范对齐(rc.38 新增 commit `82ac1b9c8`)**: rc.37 起前端约定服务端错误统一走 `handleServerError(error, fallbackMessage)`(`web/AGENTS.md` 3.9),官方已把相邻 section 全部同步。本地新建的 `overview-section.tsx` 原为 `catch { toast.error(...) }` 旧写法,已改为一致写法,保留服务端具体原因而非固定文案。
 - **升级注意**: rc.36 官方把概览页设置引导重构为 `<SectionPageLayout>` 三段式(标题栏切换按钮 / `hidden` 展开容器 / 折叠条,新增 aria 可访问性);本地守卫已在**四个渲染位置**逐一重放(标题栏按钮 `setupGuideEnabled && setupStatusReady && setupComplete`、展开容器 `hidden={!setupGuideExpanded || !setupGuideEnabled}`、展开容器内部条件、折叠条条件)。若官方后续再次重构概览页或系统设置面板,需重新评估/迁移该开关。
 
+### 3.4 构建健壮性:固定 `VERSION` / `Dockerfile*` 为 LF(上游无此改动)
+- **rc.38 分支 commit**: `cdf0109a1`
+- **问题**: 本机 git 配置 `core.autocrlf=true`,而仓库 `.gitattributes` 只有 `* text=auto`,未给 `VERSION` 与 `Dockerfile*` 指定 `eol`。这两个文件因此会在 **checkout 时被转成 CRLF**:
+  - `Dockerfile` 第 8 行 `VITE_REACT_APP_VERSION=$(cat /build/VERSION)` 与第 28 行 `-X '...common.Version=$(cat VERSION)'` 把版本号注入前端与二进制。容器内 sh 的 `$(...)` **只去除结尾换行、不去除 `\r`**,于是镜像内的版本号变成 `v1.0.0-rc.38-1\r`(14 字节变 15 字节)。
+  - `Dockerfile` 自身为 CRLF 时,构建指令也会带 `\r`;新版本 Docker 通常容忍并告警,但不应依赖该行为。
+  - 该问题在 Windows 本机的 Git Bash 中**会被掩盖**(MSYS 的 `$(cat VERSION)` 已吃掉 `\r`),只有把仓库挂载进 Linux 容器才复现。
+- **修复**: `.gitattributes` 在 Shell scripts 段之后新增
+  ```
+  Dockerfile* text eol=lf
+  VERSION text eol=lf
+  ```
+  并对 `Dockerfile`、`Dockerfile.dev`、`VERSION` 重新检出;`git check-attr eol <file>` 现返回 `lf`,三个文件均已是 `ASCII text`(不再含 CRLF)。
+- **验证**(实测,已通过):
+  ```bash
+  docker run --rm -v "<repo>:/w:ro" -w /w alpine sh -c \
+    'od -c VERSION; printf "%s" "$(cat VERSION)" | od -c'
+  # 修复前: raw 以 \r\n 结尾,捕获结果为 15 字节(末尾 \r)
+  # 修复后: raw 以 \n  结尾,捕获结果为 14 字节,无 \r
+  ```
+- **升级注意**: 这两行追加在 `.gitattributes` 的 Shell scripts 段之后;官方后续若修改该文件,注意保留。仓库内无 `.bat`/`.cmd`/`.ps1`,因此不存在必须保留 CRLF 的文件。
+
 ---
 
 ## 4. 三层防线(针对 client_gone 误标)
@@ -177,6 +198,7 @@ docker rm -f newapi-smoke
   - `e0e87961e` fix6649 + 快速路径 + 回归测试(本地自定义,上游无)
   - `cdcdd9c4d` 概览页设置引导开关(本地功能,上游无)
   - `82ac1b9c8` 概览开关错误处理对齐官方 `handleServerError` 约定(本地,上游无)
+  - `cdf0109a1` 固定 `VERSION` / `Dockerfile*` 为 LF(本地,上游无)
   - 基线 `2906e4f77`(v1.0.0-rc.38)
 - 历史分支 `lisrain/rc36-patched`(HEAD `83b88378d`,基于 rc.36,含全部 4 补丁)与 `lisrain/rc32-patched`(HEAD `4756876f`)在本分支建立后**仍留在本地**;两者的备份 tag **`backup/lisrain-rc36-patched`**、**`backup/lisrain-rc32-patched`** 均已建好,分支可随时安全删除。
 - 历史分支 `lisrain/rc30-patched`(→ `b0e476a0`,基于 rc.30,含 4 补丁)已删除,备份 tag **`backup/lisrain-rc30-patched`**(指向 `b0e476a0`)可随时恢复。
@@ -195,7 +217,7 @@ docker rm -f newapi-smoke
 ### 6.2 官方发新 release(如 rc.39)时的跟进流程
 1. `git fetch origin --tags` 拉取官方新 tag
 2. 基于官方新 tag 建本地分支:`git switch -c lisrain/rc39-patched v1.0.0-rc.39`
-3. 按需 cherry-pick 本地补丁(以下 rc.38 分支 hash):`2eeb86632`(#6808)、`52cc078e9`(#6904)、`e0e87961e`(fix6649 + 快速路径)、`cdcdd9c4d`(概览页设置引导开关)、`82ac1b9c8`(错误处理对齐);官方已合入的跳过对应 commit
+3. 按需 cherry-pick 本地补丁(以下 rc.38 分支 hash):`2eeb86632`(#6808)、`52cc078e9`(#6904)、`e0e87961e`(fix6649 + 快速路径)、`cdcdd9c4d`(概览页设置引导开关)、`82ac1b9c8`(错误处理对齐)、`cdf0109a1`(构建换行);官方已合入的跳过对应 commit
 4. 处理可能的冲突,重点核对:
    - `relay/helper/stream_scanner.go` —— 本地改过主 select 与 scanner 错误分支;官方若动 `client_gone` 分支或退出时序需重新评估
    - `relay/common/stream_status.go` —— 本地把 `endOnce` 换成了 `mu + reasonSet`;官方持续在加 `ResponseOutcome` 系列方法,**若官方把 `SetEndReason` 也改成可覆盖,则 #6808 可退役**
@@ -203,6 +225,7 @@ docker rm -f newapi-smoke
    - `controller/misc.go` —— 官方若在 status map 新增键,注意与 `setup_guide_enabled` 的上下文合并
    - `overview-dashboard.tsx` —— 官方若继续重构概览页,**保留四处 `setupGuideEnabled` 守卫**
    - `system-settings/{types.ts, hooks/use-update-option.ts}` —— 官方改动频繁,注意 `setup_guide_enabled` 键与 STATUS_RELATED_KEYS 条目的存活
+   - `.gitattributes` —— 本地在 Shell scripts 段后追加了 `Dockerfile* text eol=lf` 与 `VERSION text eol=lf`,官方若改该文件注意保留
 5. 递增 VERSION 序号 → 构建镜像 → 更新 compose
 
 ---
