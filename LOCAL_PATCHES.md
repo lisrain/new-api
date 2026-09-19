@@ -200,7 +200,8 @@ docker rm -f newapi-smoke
   - `82ac1b9c8` 概览开关错误处理对齐官方 `handleServerError` 约定(本地,上游无)
   - `cdf0109a1` 固定 `VERSION` / `Dockerfile*` 为 LF(本地,上游无)
   - 基线 `2906e4f77`(v1.0.0-rc.38)
-- 历史分支 `lisrain/rc36-patched`(HEAD `83b88378d`,基于 rc.36,含全部 4 补丁)与 `lisrain/rc32-patched`(HEAD `4756876f`)在本分支建立后**仍留在本地**;两者的备份 tag **`backup/lisrain-rc36-patched`**、**`backup/lisrain-rc32-patched`** 均已建好,分支可随时安全删除。
+- 历史分支 `lisrain/rc36-patched`(→ `83b88378d`,基于 rc.36,含全部 4 补丁)已删除,备份 tag **`backup/lisrain-rc36-patched`**(指向 `83b88378d`)可随时恢复。
+- 历史分支 `lisrain/rc32-patched`(→ `4756876f`,基于 rc.32,含 4 补丁)已删除,备份 tag **`backup/lisrain-rc32-patched`**(指向 `4756876f`)可随时恢复。
 - 历史分支 `lisrain/rc30-patched`(→ `b0e476a0`,基于 rc.30,含 4 补丁)已删除,备份 tag **`backup/lisrain-rc30-patched`**(指向 `b0e476a0`)可随时恢复。
 - 历史分支 `lisrain/rc27-patched`(→ `89ea2020`,基于 rc.27)已删除,备份 tag **`backup/lisrain-rc27-patched`**(指向 `89ea2020`)可随时恢复。
 
@@ -234,9 +235,18 @@ docker rm -f newapi-smoke
 
 > 2026-09-19 复查(rc.38 跟进):以下除注明外仍全部 OPEN,官方 rc.38 均未吸收。
 
-- **#6951** `fix(openai): 正确结束 Responses 流` —— **与本地 #6904 同源同方案**(终态事件后立即结束流,避免误记 `client_gone`),官方未吸收。若该 PR 合入,可与 #6904 一并退役。
-- **#7178** `fix(relay): drain upstream after client_gone to collect final usage` —— 针对 issue #7062 的另一条思路(断连后继续读上游拿 usage);与本地"给 scanner 宽限期"的方向不同,若合入需重新评估 fix6649 的宽限期取值。
-- **#7419** `fix(relay): correctly label estimated Responses stream usage`(2026-09-17,核心开发者 @seefs001)—— 修正部分情况下本地计算 usage 被标记为上游返回,并细化流错误信息。
+- **#6951** `fix(openai): 正确结束 Responses 流` —— **与本地 #6904 同源同方案**(终态事件后立即结束流,避免误记 `client_gone`),官方未吸收。经 2026-09-19 逐行核对,其写法(`sr.Done()` 挂在 `case "response.completed", "response.done":` 分支末尾)与本地 #6904 原版**完全一致,无更优之处**;本地迁移到 `ResponseOutcome()` 的版本更贴合 rc.38 新累加器结构。若该 PR 合入,可与 #6904 一并退役。
+- **#7178** `fix(relay): drain upstream after client_gone to collect final usage` —— **与本地 fix6649 同落点**(`StreamScannerHandler` 主 select 的 `client_gone` 分支),但方案更完整,是本地宽限期的**候选升级方向**:
+  - 引入可配置超时 `CLIENT_GONE_DRAIN_TIMEOUT`(默认 60s,`0` 表示立即关闭上游 = 旧行为),而本地是固定 `streamClientGoneGrace = 500ms`;
+  - **配套修掉了本地宽限期的一个副作用**:drain 期间 `helper.StringData` / `ResponseChunkData` 在请求上下文已取消时**返回 `nil` 而非错误**,避免"写已断开的客户端"产生 soft error;
+  - 目标更根本——拿到上游真实 usage(直接对治 issue #7062 的计费不一致),而非仅仅让 `EndReason` 正确;含完整回归测试 `TestStreamScannerHandler_ClientGoneDrainsUntilFinalUsage`。
+  - **注意二者是同落点的竞争关系,只能二选一,不能叠加**;且默认 60s 窗口在用户主动取消长对话时会显著增加上游 token 消耗。
+- **#7419** `fix(relay): correctly label estimated Responses stream usage`(2026-09-17,核心开发者 @seefs001)—— rc.38 之后提交,**改动文件几乎覆盖本地全部补丁落点**(`stream_status.go`/`stream_scanner.go`/`helper/common.go`/`stream_result.go`/`responses_websocket.go`/`responses_usage.go`/`log_info_generate.go`),但经 2026-09-19 核对:
+  - **不影响本地补丁的必要性**——它**保留了 `endOnce sync.Once`**(即不采纳 #6808 的"正常完成可覆盖 `client_gone`"),也**未改主 select 的 `client_gone` 分支逻辑**(仅给错误参数包上来源标记),更**未在 HTTP SSE 路径加终态标记**;
+  - 其核心是**流错误诊断**:新增 `streamDiagnosticWriter` 包装 `c.Writer` 记录下行写失败、`WithStreamErrorSource` 标记错误来源(`downstream_write`/`upstream_read`/`request_context`/`stream_idle_timeout`)、`describeStreamError` 归类错误码;
+  - `streamDiagnosticWriter` 恰好覆盖本地 fix6649 的一个副作用(见下方"已知副作用"),其注释明确"不替换终态原因、不影响计费";
+  - 若该 PR 合入,本地 #6808 需重新适配(`SetEndReason` 内会多出 `EndErrorCode`/`EndErrorSource` 赋值);`ResponsesUsageAccumulator.Finish()` 签名将变为 `Finish(c *gin.Context)`,与本地 #6904 的 `sr.Done()` 相邻但不冲突。
+- **已核对的本地已知副作用(2026-09-19,代码推导,未实测)**:fix6649 的 500ms 宽限期让 scanner 在客户端断开后多跑一会儿。对**在 dataHandler 回调里直接写客户端**的适配器(`relay/channel/claude/relay-claude.go:306`、`relay/channel/openai/relay_image.go:168`),宽限期内写失败会触发 `sr.Stop(err)` → `SetEndReason(HandlerStop)` + `RecordError`。由于 `IsNormalEnd()` 认可 `HandlerStop`,宽限期逻辑被绕过,且 `HasErrors` 变为 true、`EndReason` 不再是 `ClientGone`,导致 `pkg/perf_metrics.ClassifyRelayOutcome` **不再走 `OutcomeIgnored`,改判 `OutcomeFailure`** —— 即"客户端主动断开"被计入渠道健康失败样本(不会直接禁用渠道,但污染健康度,进而影响 rc.38 的 channel health 路由决策)。修复前该场景为 `ClientGone` → `Ignored`(正确)。**OpenAI chat 路径不受影响**(其写发生在 `StreamScannerHandler` 返回后的 `handleLastResponse`,不在回调内);**Responses 路径亦不受影响**(#6904 的 `sr.Done()` 已在终态事件后停止 handler)。待观察 #7178 / #7419 的落地情况再决定是否调整。
 - **#7066** 上游流中途失败时向客户端发终态错误事件
 - **#6960** 模型限流器隔离与按 group 作用域计数(稳定性)
 - **#6913** / **#6979** 订阅计费修复
