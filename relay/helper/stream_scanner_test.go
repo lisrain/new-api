@@ -15,6 +15,7 @@ import (
 
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -760,4 +761,89 @@ func TestStreamScannerHandler_CompletedStreamSkipsGraceOnClientGone(t *testing.T
 	require.Less(t, elapsed, streamClientGoneGrace/2,
 		"handler should return promptly once done is set, took %v", elapsed)
 	require.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+}
+
+// TestStreamScannerHandler_ClientGoneWriteInGraceIsNotHandlerStop pins the
+// contract behind the write helpers' context guard: adaptors that write to
+// the client inside the dataHandler and call sr.Stop on a write error (Claude,
+// image streams) must not turn a client disconnect into handler_stop. During
+// the client-gone grace window the scanner keeps delivering upstream chunks;
+// writes to the gone client are dropped silently, so the stream ends as
+// client_gone without recorded errors (which keeps channel health sampling
+// on the "ignored" path instead of counting a failure).
+func TestStreamScannerHandler_ClientGoneWriteInGraceIsNotHandlerStop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pr, pw := io.Pipe()
+	t.Cleanup(func() {
+		_ = pr.Close()
+		_ = pw.Close()
+	})
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+
+	resp := &http.Response{Body: pr}
+	info := &relaycommon.RelayInfo{
+		DisablePing: true,
+		ChannelMeta: &relaycommon.ChannelMeta{},
+	}
+
+	firstHandled := make(chan struct{})
+	secondHandled := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+			// Mirror relay_image.go / relay-claude.go: a failed client write
+			// is fatal for the handler.
+			if err := ResponseChunkData(c, dto.ResponsesStreamResponse{Type: "response.output_text.delta"}, data); err != nil {
+				sr.Stop(err)
+			}
+			switch data {
+			case "first":
+				close(firstHandled)
+			case "second":
+				close(secondHandled)
+			}
+		})
+		close(done)
+	}()
+
+	_, err := fmt.Fprint(pw, "data: first\n")
+	require.NoError(t, err)
+	select {
+	case <-firstHandled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the first chunk")
+	}
+
+	// Client disconnects mid-stream; upstream still produces a chunk inside
+	// the grace window and the scanner forwards it to the handler.
+	cancel()
+	_, err = fmt.Fprint(pw, "data: second\n")
+	require.NoError(t, err)
+	select {
+	case <-secondHandled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the chunk delivered during the grace window")
+	}
+
+	// Upstream never finishes; the grace window expires and the handler
+	// records the disconnect itself.
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return after the grace window")
+	}
+
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonClientGone, info.StreamStatus.EndReason,
+		"a write to a gone client must not be recorded as handler_stop")
+	assert.False(t, info.StreamStatus.HasErrors(), "a client disconnect is not a stream error")
+
+	body := recorder.Body.String()
+	assert.Contains(t, body, "first")
+	assert.NotContains(t, body, "second", "nothing may be written after the client is gone")
 }
