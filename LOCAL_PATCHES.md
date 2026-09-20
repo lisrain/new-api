@@ -251,7 +251,7 @@ docker rm -f newapi-smoke
   - `cdcdd9c4d` 概览页设置引导开关(本地功能,上游无)
   - `82ac1b9c8` 概览开关错误处理对齐官方 `handleServerError` 约定(本地,上游无)
   - `cdf0109a1` 固定 `VERSION` / `Dockerfile*` 为 LF(本地,上游无)
-  - `(待补 hash)` CI 化:新增 `.github/workflows/ghcr-build.yml` + 给上游三个 workflow 加仓库守卫(本地,上游无,见 3.6)
+  - `5efc0afab` CI 化:新增 `.github/workflows/ghcr-build.yml` + 给上游三个 workflow 加仓库守卫(本地,上游无,见 3.6)
   - 基线 `2906e4f77`(v1.0.0-rc.38)
 - **远程**:`origin` 指上游 `QuantumNous/new-api`(只 fetch,用来拉官方新 tag、发 PR),`fork` 指 `https://github.com/lisrain/new-api`(只 push 维护分支与备份 tag)。
 - 历史分支 `lisrain/rc36-patched`(→ `83b88378d`,基于 rc.36,含全部 4 补丁)已删除,备份 tag **`backup/lisrain-rc36-patched`**(指向 `83b88378d`)可随时恢复。
@@ -272,7 +272,7 @@ docker rm -f newapi-smoke
 ### 6.2 官方发新 release(如 rc.39)时的跟进流程
 1. `git fetch origin --tags` 拉取官方新 tag
 2. 基于官方新 tag 建本地分支:`git switch -c lisrain/rc39-patched v1.0.0-rc.39`
-3. 按需 cherry-pick 本地补丁(以下 rc.38 分支 hash):`2eeb86632`(#6808)、`52cc078e9`(#6904)、`eb6c5cab1`(#7088)、`e0e87961e`(fix6649 + 快速路径)、`a9a2c6d97`(写入守卫)、`cdcdd9c4d`(概览页设置引导开关)、`82ac1b9c8`(错误处理对齐)、`cdf0109a1`(构建换行)、CI 化那次提交(见 3.6);官方已合入的跳过对应 commit
+3. 按需 cherry-pick 本地补丁(以下 rc.38 分支 hash):`2eeb86632`(#6808)、`52cc078e9`(#6904)、`eb6c5cab1`(#7088)、`e0e87961e`(fix6649 + 快速路径)、`a9a2c6d97`(写入守卫)、`cdcdd9c4d`(概览页设置引导开关)、`82ac1b9c8`(错误处理对齐)、`cdf0109a1`(构建换行)、`5efc0afab`(CI 化,见 3.6);官方已合入的跳过对应 commit
 4. 处理可能的冲突,重点核对:
    - `relay/helper/stream_scanner.go` —— 本地改过主 select 与 scanner 错误分支;官方若动 `client_gone` 分支或退出时序需重新评估
    - `relay/common/stream_status.go` —— 本地把 `endOnce` 换成了 `mu + reasonSet`;官方持续在加 `ResponseOutcome` 系列方法,**若官方把 `SetEndReason` 也改成可覆盖,则 #6808 可退役**
