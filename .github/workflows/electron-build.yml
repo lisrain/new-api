@@ -16,6 +16,7 @@ jobs:
         os: [windows-latest]
 
     runs-on: ${{ matrix.os }}
+    if: github.repository == 'QuantumNous/new-api'
     defaults:
       run:
         shell: bash
@@ -124,7 +125,7 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.repository == 'QuantumNous/new-api' && startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
 

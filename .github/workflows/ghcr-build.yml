@@ -1,0 +1,154 @@
+name: Build and publish image to GHCR
+
+# VERSION 文件是唯一版本来源,不监听 tag:fork 里带着上游 tag,
+# 按 tag 构建会把本地补丁分支的内容刷成官方版本号。
+on:
+  push:
+    branches:
+      - 'lisrain/**'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '覆盖 VERSION(留空则用仓库内 VERSION 文件)'
+        required: false
+        type: string
+
+concurrency:
+  group: ghcr-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/new-api
+
+jobs:
+  test:
+    name: Backend regression tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GOWORK: 'off'
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            relaykit/go.sum
+
+      - name: Create frontend embed placeholder
+        run: |
+          mkdir -p web/dist
+          touch web/dist/index.html
+
+      - name: Relay helper regression
+        run: go test ./relay/helper/... -run "ClientGone|ClientCancel|CompletedStream|SkipsGrace|HandlerStop" -count=1 -v
+
+      - name: OpenAI relay regression
+        run: go test ./relay/channel/openai/ -run "MarksDoneOnCompleted|AddsMissingItemCollections|ResponsesToChatStream|ImageStream" -count=1 -v
+
+      - name: Relay packages
+        run: |
+          go test ./relay/channel/openai/ ./relay/channel/claude/ ./relay/channel/gemini/ ./relay/ -count=1
+          go test ./relay/common/... -count=1
+
+      - name: Responses usage
+        run: go test ./service -run "ResponsesUsage" -count=1
+
+      - name: Build relaykit independently
+        working-directory: relaykit
+        run: go build ./...
+
+  build:
+    name: Build & push (linux/amd64)
+    needs: [test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            printf '%s\n' "$INPUT_VERSION" > VERSION
+          fi
+          VERSION=$(cat VERSION)
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "Building ${VERSION} (${SHORT_SHA})"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4 # v4.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # cache-to 必须 mode=max,否则只导出最终镜像里那几个层,
+      # bun install 与 go mod download 这两层不会被缓存。
+      # 注意:BuildKit 的 RUN --mount=type=cache 不会被导出到 gha 缓存,
+      # 这里能跨 run 复用的只有层缓存。
+      - name: Build & push
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+            ${{ env.IMAGE }}:${{ steps.version.outputs.version }}-${{ steps.version.outputs.short_sha }}
+          cache-from: type=gha,scope=newapi-image
+          cache-to: type=gha,mode=max,scope=newapi-image,ignore-error=true
+          provenance: false
+
+      # 复刻 LOCAL_PATCHES 第 5 节的冒烟:起容器探 /api/status。
+      # setup_guide_enabled 是本地补丁独有的键,用来确认镜像里真的是补丁版。
+      - name: Smoke test
+        env:
+          IMAGE_TAG: ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker run -d --name newapi-smoke -p 3000:3000 "$IMAGE_TAG"
+          trap 'docker rm -f newapi-smoke' EXIT
+          ready=
+          for _ in $(seq 1 30); do
+            if curl -fsS http://localhost:3000/api/status -o status.json; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "$ready" ]; then
+            echo "::error::/api/status did not become ready within 60s"
+            docker logs newapi-smoke || true
+            exit 1
+          fi
+          cat status.json
+          grep -q '"success":true' status.json
+          grep -q '"setup_guide_enabled":true' status.json
+
+      - name: Image summary
+        run: |
+          {
+            echo "### Image"
+            echo '```'
+            echo "${IMAGE}:${{ steps.version.outputs.version }}"
+            echo "${{ steps.build.outputs.digest }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
