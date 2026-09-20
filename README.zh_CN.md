@@ -55,6 +55,22 @@
 
 ---
 
+## 🧩 本仓库说明
+
+> [!NOTE]
+> 这是 **New API** 的个人分支,维护在 `lisrain/*` 分支上,基线为上游 tag **v1.0.0-rc.39**。每次向该分支推送都会触发 GitHub Actions:跑后端回归测试 → 构建镜像 → 推送至 GitHub Container Registry → 容器冒烟。
+
+| 项目 | 说明 |
+|------|------|
+| 📦 镜像 | `ghcr.io/lisrain/new-api:<版本>`(公开包,拉取无需登录) |
+| 🏗️ 流水线 | `.github/workflows/ghcr-build.yml` — 后端回归测试 → 构建 → 推送 → 冒烟 |
+| 🩹 补丁 | 上游 PR #6808 / #6904 / #7088,`fix6649`,客户端断开后的写入守卫,概览页设置引导开关 |
+| 📖 详情 | [`LOCAL_PATCHES.md`](./LOCAL_PATCHES.md) — 每个补丁的上游状态、退役条件与升级注意事项 |
+
+```bash
+docker pull ghcr.io/lisrain/new-api:v1.0.0-rc.39-1
+```
+
 ## 📝 项目说明
 
 New API 是面向应用、Agent 和团队的自托管 AI 网关。将不同厂商的模型服务接入统一入口，在同一套控制台中管理渠道、访问权限、用量与成本。
