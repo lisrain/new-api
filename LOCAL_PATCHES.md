@@ -9,7 +9,8 @@
 
 - 镜像 tag / VERSION 采用 **`v1.0.0-rc.38-<序号>`** 增量命名,每次在此分支上新增改动后构建,序号递增。
 - 当前为 **`v1.0.0-rc.38-1`**(基于官方 rc.38,合入 PR 6808 + PR 6904 + PR 7088 + fix6649 + 快速路径 + #7178 写入守卫 + 概览页设置引导开关 + 构建换行修复)。
-- **2026-09-19 镜像尚未构建**:当日两次跟进——第一次拉取 rc.38、完成补丁存废判定与合入;第二次按第 7 节评估结论合入 PR #7088 与 #7178 的写入守卫(见 2.3、3.5),后端回归测试已在 docker 内通过(第 5 节)。`v1.0.0-rc.38-1` 尚未 `docker build`,compose 仍指向 `rc.36-1`;下次直接执行第 5 节的构建与冒烟即可,无需再递增序号。
+- **2026-09-19 补丁就绪**:当日两次跟进——第一次拉取 rc.38、完成补丁存废判定与合入;第二次按第 7 节评估结论合入 PR #7088 与 #7178 的写入守卫(见 2.3、3.5),后端回归测试已在 docker 内通过(第 5 节)。
+- **2026-09-20 构建迁移到 GitHub Actions**:代码推送到 fork `github.com/lisrain/new-api` 后,由 `.github/workflows/ghcr-build.yml` 跑回归测试 → 构建 → 推 `ghcr.io/lisrain/new-api:<VERSION>` → 容器冒烟(见 3.6);本机 `docker build` 降级为离线/调试路径(第 5 节)。`v1.0.0-rc.38-1` 以云端首次成功构建的产物为准,无需再递增序号;镜像产出前 compose 的 `image:` 不动。
 - **跟进记录**: rc.32 → rc.36 → rc.38(本次跨官方 rc.37、rc.38 两个 release)。
 
 ### 1.1 rc.38 补丁存废判定(2026-09-19)
@@ -147,6 +148,24 @@
 - **测试**: `TestStreamScannerHandler_ClientGoneWriteInGraceIsNotHandlerStop`——客户端断开后宽限期内上游再来一个 chunk,回调按 image/claude 的模式对写失败 `sr.Stop`;守卫前该用例实测失败(`handler_stop` + `HasErrors`),守卫后 `client_gone` 且无错误,断开后不再向客户端写任何字节。
 - **退役条件**: 官方合入 #7178(含此改动)或 #7419(`streamDiagnosticWriter` 覆盖同一场景)后按官方版本处理。
 
+### 3.6 CI 化:云端构建 ghcr 镜像 + 上游 workflow 仓库守卫(上游无此改动)
+- **背景**:原流程在本机 `docker build`(第 5 节),受本机 Docker 磁盘与网络限制;改为 GitHub Actions 构建并推送 `ghcr.io`。
+- **新增文件**:`.github/workflows/ghcr-build.yml`
+  - **触发**:`push` 到 `lisrain/**` 分支,以及手动 `workflow_dispatch`(可临时覆盖 VERSION)。**不监听 tag**——fork 里带着上游 tag,按 tag 构建会把本地补丁分支的内容刷成官方版本号。
+  - **`test` job**:在 ubuntu-latest 上跑第 5 节那套回归(`relay/helper` 与 `relay/channel/openai` 的定向用例,加 `relay/channel/{openai,claude,gemini}`、`relay/`、`relay/common` 全量,以及 `service -run ResponsesUsage`),并 `cd relaykit && go build ./...`(AGENTS.md 要求)。失败即中止,不发镜像。顺带解决了"Windows 本机跑不了 `./relay/...` 全量"(第 5 节)。
+  - **`build` job**:`docker/build-push-action` 构建 linux/amd64,推双 tag `:<VERSION>` 与 `:<VERSION>-<short sha>`;`<VERSION>` 取自仓库内 `VERSION` 文件(唯一版本源,**不推 `latest`**,避免部署端误升级)。
+  - **冒烟**:起容器探 `/api/status`,断言 `"success":true` 与 `"setup_guide_enabled":true`——后者是 3.3 本地开关独有的键,用来确认镜像里确实是补丁版而非上游版。
+  - **鉴权**:`GITHUB_TOKEN` + `packages: write`,无需任何自建 secret;不迁移上游的 cosign 签名与 provenance/sbom(`provenance: false`,保持单架构 manifest 干净)。
+- **缓存策略(2026-09-20 核实)**:
+  - 只有**层缓存**能跨 run 复用,固定用 `cache-from: type=gha,scope=newapi-image` + `cache-to: type=gha,mode=max,scope=newapi-image,ignore-error=true`。**`mode=max` 不可省**,否则只导出最终镜像里那几个层,`bun install`(约 1.5GB 依赖)与 `go mod download` 两层不会被缓存。
+  - **不要加 `RUN --mount=type=cache`**:BuildKit 明确不把 cache mount 的内容导出到任何 `cache-to` 后端(见 [moby/buildkit#3011](https://github.com/moby/buildkit/issues/3011) 维护者答复、[docker/buildx#244](https://github.com/docker/buildx/issues/244)),GitHub runner 每次都是新机器,收益为 0,只会给人"已优化"的错觉。因此**不改 Dockerfile**——本机 docker 构建时 cache mount 虽有效,但不值得为此牺牲与上游的可合并性。
+  - 现有 Dockerfile 的分层本来就是对层缓存友好的(`package.json`+`bun.lock` 先 COPY、`go.mod`/`go.sum` 先 ADD),后端改动不会打掉 `bun install` 与 `bun run build` 两层,无需调整。
+  - `RUN go build` 那层的输入是 `COPY . .`,任何源码改动都会失效,每次都全量重编译(热缓存下约 2~4 分钟),这是剩余的主要耗时,无低成本解法(Go 不支持只编译依赖;改 Dockerfile 拆层会牺牲与上游的可合并性)。
+  - gha 后端 **scope 默认取当前分支名**,且 GitHub 只允许读取"当前分支/基础分支/默认分支"的缓存 → 冷启动的边界是**换分支**(例如新建 `lisrain/rc39-patched` 后第一次构建必然冷),不是换 commit;同分支上连续构建则接近全命中。显式写死 `scope=newapi-image` 是为了避免同分支多构建互相覆盖。
+  - gha 缓存按仓库计上限 10GB(LRU 淘汰)。若出现频繁淘汰或 `failed to reserve cache`,退回 `type=registry,ref=ghcr.io/lisrain/new-api:buildcache,mode=max`(无 10GB 限制,且 blob 与镜像同仓)。
+- **上游 workflow 仓库守卫**:`docker-build.yml`(`build_single_arch`、`create_manifests`)、`release.yml`(`linux`/`macos`/`windows`)、`electron-build.yml`(`build`/`release`)各加 `if: github.repository == 'QuantumNous/new-api'`(job 已有 `if` 的用 `&&` 合并原条件)。这样在 fork 里推 tag 时这些 job 全部跳过,既不需要 Docker Hub 密钥,也不会白跑 macOS/Windows 构建;在官方仓库内守卫恒为真,不影响日后把该 commit 提回上游。**未加守卫的三处**:`docker-image-branch.yml`、`sync-release-to-gitcode.yml` 只在手动触发时运行,`ci.yml` 只响应 PR。
+- **升级注意**:上游若改动这三个 workflow,合并冲突时保留守卫;`ghcr-build.yml` 是本地文件,上游不会碰,无需重放。
+
 ---
 
 ## 4. 三层防线(针对 client_gone 误标)
@@ -163,9 +182,11 @@
 
 ---
 
-## 5. 测试(统一在 docker 内执行)
+## 5. 构建与测试(云端 CI 为主,本机 docker 为离线兜底)
 
-> Windows 本机 `H:` 盘未加入 Docker 文件共享,且本机 Go 版本与项目要求可能不一致,**编译与测试一律在 docker build 内完成**(官方 Dockerfile 后端用 golang:1.26.1-alpine)。
+**云端路径(2026-09-20 起默认)**:提交后 `git push fork lisrain/rc38-patched`,GitHub Actions 自动跑回归测试 → 构建镜像 → 推 `ghcr.io/lisrain/new-api:<VERSION>` → 容器冒烟(见 3.6)。绿灯后只需改 compose 的 `image:` 再 `docker compose up -d`,本机不必再跑 docker build。
+
+**离线/调试路径(以下命令均在本机 docker 内执行)**:Windows 本机 `H:` 盘未加入 Docker 文件共享,且本机 Go 版本与项目要求可能不一致,需要在本机验证时**编译与测试一律在 docker build 内完成**(官方 Dockerfile 后端用 golang:1.26.1-alpine)。
 
 ```bash
 # 1) 容器内跑后端回归测试 + relaykit 独立构建(临时 Dockerfile.test,用完即删)
@@ -204,10 +225,11 @@ docker build -f Dockerfile.test -t newapi-test:rc38 .
 #    docker builder prune -a -f --filter until=48h 定期清理。
 
 # 2) 构建正式镜像(前端 bun build + 后端 go build 全量编译)
-docker build -t calciumion/new-api:v1.0.0-rc.38-1 .
+#    离线路径也统一用 ghcr 镜像名打 tag,compose 的 image: 引用无需分两套
+docker build -t ghcr.io/lisrain/new-api:v1.0.0-rc.38-1 .
 
 # 3) 冒烟:临时容器探测 /api/status(不映射端口,避免占用 3000)
-docker run -d --rm --name newapi-smoke calciumion/new-api:v1.0.0-rc.38-1
+docker run -d --rm --name newapi-smoke ghcr.io/lisrain/new-api:v1.0.0-rc.38-1
 docker exec newapi-smoke wget -q -O - http://localhost:3000/api/status   # 应含 "success":true、"setup_guide_enabled":true
 docker rm -f newapi-smoke
 
@@ -229,7 +251,9 @@ docker rm -f newapi-smoke
   - `cdcdd9c4d` 概览页设置引导开关(本地功能,上游无)
   - `82ac1b9c8` 概览开关错误处理对齐官方 `handleServerError` 约定(本地,上游无)
   - `cdf0109a1` 固定 `VERSION` / `Dockerfile*` 为 LF(本地,上游无)
+  - `(待补 hash)` CI 化:新增 `.github/workflows/ghcr-build.yml` + 给上游三个 workflow 加仓库守卫(本地,上游无,见 3.6)
   - 基线 `2906e4f77`(v1.0.0-rc.38)
+- **远程**:`origin` 指上游 `QuantumNous/new-api`(只 fetch,用来拉官方新 tag、发 PR),`fork` 指 `https://github.com/lisrain/new-api`(只 push 维护分支与备份 tag)。
 - 历史分支 `lisrain/rc36-patched`(→ `83b88378d`,基于 rc.36,含全部 4 补丁)已删除,备份 tag **`backup/lisrain-rc36-patched`**(指向 `83b88378d`)可随时恢复。
 - 历史分支 `lisrain/rc32-patched`(→ `4756876f`,基于 rc.32,含 4 补丁)已删除,备份 tag **`backup/lisrain-rc32-patched`**(指向 `4756876f`)可随时恢复。
 - 历史分支 `lisrain/rc30-patched`(→ `b0e476a0`,基于 rc.30,含 4 补丁)已删除,备份 tag **`backup/lisrain-rc30-patched`**(指向 `b0e476a0`)可随时恢复。
@@ -240,15 +264,15 @@ docker rm -f newapi-smoke
 1. 以当前 HEAD 为基
 2. 手动 `git merge`/`cherry-pick` 需要的上游 PR 分支(`gh pr diff <n>` 或 fetch `refs/pull/<n>/head`)
 3. 保留本地 `relay/helper/stream_scanner.go`(fix6649 + 快速路径)与 `relay/helper/common.go`(写入守卫)的自定义改动——与上游 PR 不冲突(不同文件)
-4. `echo "v1.0.0-rc.38-N" > VERSION`(序号递增)→ `docker build -t calciumion/new-api:v1.0.0-rc.38-N .`
-5. 更新 `C:\Users\Lenovo\Desktop\AIProxy\newapi\docker-compose.yml` 的 `image:` 引用
+4. `echo "v1.0.0-rc.38-N" > VERSION`(序号递增)→ 提交并 `git push fork lisrain/rc38-patched`,等 `ghcr-build` workflow 绿灯(测试 / 构建 / 冒烟三段);只想临时换个版本号时可手动 `workflow_dispatch` 并填 `version` 输入,不必改文件
+5. 更新 `C:\Users\Lenovo\Desktop\AIProxy\newapi\docker-compose.yml` 的 `image:` 为 `ghcr.io/lisrain/new-api:v1.0.0-rc.38-N`(`docker compose up -d` 自动拉取)
 
 **待官方将 #6808、#6904、#7088 合入 main 后**,可直接切到官方新 release 基线,届时本地的 stream_scanner 自定义改动可作为对比参考逐步收敛。工作区保持干净。
 
 ### 6.2 官方发新 release(如 rc.39)时的跟进流程
 1. `git fetch origin --tags` 拉取官方新 tag
 2. 基于官方新 tag 建本地分支:`git switch -c lisrain/rc39-patched v1.0.0-rc.39`
-3. 按需 cherry-pick 本地补丁(以下 rc.38 分支 hash):`2eeb86632`(#6808)、`52cc078e9`(#6904)、`eb6c5cab1`(#7088)、`e0e87961e`(fix6649 + 快速路径)、`a9a2c6d97`(写入守卫)、`cdcdd9c4d`(概览页设置引导开关)、`82ac1b9c8`(错误处理对齐)、`cdf0109a1`(构建换行);官方已合入的跳过对应 commit
+3. 按需 cherry-pick 本地补丁(以下 rc.38 分支 hash):`2eeb86632`(#6808)、`52cc078e9`(#6904)、`eb6c5cab1`(#7088)、`e0e87961e`(fix6649 + 快速路径)、`a9a2c6d97`(写入守卫)、`cdcdd9c4d`(概览页设置引导开关)、`82ac1b9c8`(错误处理对齐)、`cdf0109a1`(构建换行)、CI 化那次提交(见 3.6);官方已合入的跳过对应 commit
 4. 处理可能的冲突,重点核对:
    - `relay/helper/stream_scanner.go` —— 本地改过主 select 与 scanner 错误分支;官方若动 `client_gone` 分支或退出时序需重新评估
    - `relay/common/stream_status.go` —— 本地把 `endOnce` 换成了 `mu + reasonSet`;官方持续在加 `ResponseOutcome` 系列方法,**若官方把 `SetEndReason` 也改成可覆盖,则 #6808 可退役**
@@ -258,7 +282,7 @@ docker rm -f newapi-smoke
    - `overview-dashboard.tsx` —— 官方若继续重构概览页,**保留四处 `setupGuideEnabled` 守卫**
    - `system-settings/{types.ts, hooks/use-update-option.ts}` —— 官方改动频繁,注意 `setup_guide_enabled` 键与 STATUS_RELATED_KEYS 条目的存活
    - `.gitattributes` —— 本地在 Shell scripts 段后追加了 `Dockerfile* text eol=lf` 与 `VERSION text eol=lf`,官方若改该文件注意保留
-5. 递增 VERSION 序号 → 构建镜像 → 更新 compose
+5. 递增 VERSION 序号 → `git push fork lisrain/rcNN-patched` 触发云端构建(3.6,新分支第一次构建是冷缓存,约 10 分钟)→ 更新 compose 的 `image:` 为 ghcr 地址
 
 ---
 
