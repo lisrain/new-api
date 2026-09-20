@@ -84,7 +84,9 @@ jobs:
             printf '%s\n' "$INPUT_VERSION" > VERSION
           fi
           VERSION=$(cat VERSION)
-          SHORT_SHA=$(git rev-parse --short HEAD)
+          # 用定长的前 9 位:git rev-parse --short 的缩写长度取决于本地对象库
+          # 大小,而 checkout 默认 fetch-depth: 1,同一个 commit 会缩成 7 位。
+          SHORT_SHA="${GITHUB_SHA:0:9}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
           echo "Building ${VERSION} (${SHORT_SHA})"
