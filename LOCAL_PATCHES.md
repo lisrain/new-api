@@ -164,6 +164,7 @@
   - gha 后端 **scope 默认取当前分支名**,且 GitHub 只允许读取"当前分支/基础分支/默认分支"的缓存 → 冷启动的边界是**换分支**(例如新建 `lisrain/rc39-patched` 后第一次构建必然冷),不是换 commit;同分支上连续构建则接近全命中。显式写死 `scope=newapi-image` 是为了避免同分支多构建互相覆盖。
   - gha 缓存按仓库计上限 10GB(LRU 淘汰)。若出现频繁淘汰或 `failed to reserve cache`,退回 `type=registry,ref=ghcr.io/lisrain/new-api:buildcache,mode=max`(无 10GB 限制,且 blob 与镜像同仓)。
 - **上游 workflow 仓库守卫**:`docker-build.yml`(`build_single_arch`、`create_manifests`)、`release.yml`(`linux`/`macos`/`windows`)、`electron-build.yml`(`build`/`release`)各加 `if: github.repository == 'QuantumNous/new-api'`(job 已有 `if` 的用 `&&` 合并原条件)。这样在 fork 里推 tag 时这些 job 全部跳过,既不需要 Docker Hub 密钥,也不会白跑 macOS/Windows 构建;在官方仓库内守卫恒为真,不影响日后把该 commit 提回上游。**未加守卫的三处**:`docker-image-branch.yml`、`sync-release-to-gitcode.yml` 只在手动触发时运行,`ci.yml` 只响应 PR。
+- **追踪 tag 定长(`dda77a629`)**:`SHORT_SHA` 必须用 `${GITHUB_SHA:0:9}`,不能图省事写 `git rev-parse --short HEAD`——checkout 默认 `fetch-depth: 1`,缩写长度取决于本地对象库大小,浅克隆下同一个 commit 只会缩成 **7 位**(首次构建实际推出的是 `v1.0.0-rc.38-1-9663300`),追踪 tag 长度会随检出深度漂移。
 - **升级注意**:上游若改动这三个 workflow,合并冲突时保留守卫;`ghcr-build.yml` 是本地文件,上游不会碰,无需重放。
 
 ---
@@ -252,6 +253,7 @@ docker rm -f newapi-smoke
   - `82ac1b9c8` 概览开关错误处理对齐官方 `handleServerError` 约定(本地,上游无)
   - `cdf0109a1` 固定 `VERSION` / `Dockerfile*` 为 LF(本地,上游无)
   - `5efc0afab` CI 化:新增 `.github/workflows/ghcr-build.yml` + 给上游三个 workflow 加仓库守卫(本地,上游无,见 3.6)
+  - `dda77a629` fix(ci): 追踪 tag 改用定长 9 位 sha(本地,上游无,见 3.6;cherry-pick CI 化时**必须一并带上**)
   - 基线 `2906e4f77`(v1.0.0-rc.38)
 - **远程**:`origin` 指上游 `QuantumNous/new-api`(只 fetch,用来拉官方新 tag、发 PR),`fork` 指 `https://github.com/lisrain/new-api`(只 push 维护分支与备份 tag)。
 - 历史分支 `lisrain/rc36-patched`(→ `83b88378d`,基于 rc.36,含全部 4 补丁)已删除,备份 tag **`backup/lisrain-rc36-patched`**(指向 `83b88378d`)可随时恢复。
@@ -272,7 +274,7 @@ docker rm -f newapi-smoke
 ### 6.2 官方发新 release(如 rc.39)时的跟进流程
 1. `git fetch origin --tags` 拉取官方新 tag
 2. 基于官方新 tag 建本地分支:`git switch -c lisrain/rc39-patched v1.0.0-rc.39`
-3. 按需 cherry-pick 本地补丁(以下 rc.38 分支 hash):`2eeb86632`(#6808)、`52cc078e9`(#6904)、`eb6c5cab1`(#7088)、`e0e87961e`(fix6649 + 快速路径)、`a9a2c6d97`(写入守卫)、`cdcdd9c4d`(概览页设置引导开关)、`82ac1b9c8`(错误处理对齐)、`cdf0109a1`(构建换行)、`5efc0afab`(CI 化,见 3.6);官方已合入的跳过对应 commit
+3. 按需 cherry-pick 本地补丁(以下 rc.38 分支 hash):`2eeb86632`(#6808)、`52cc078e9`(#6904)、`eb6c5cab1`(#7088)、`e0e87961e`(fix6649 + 快速路径)、`a9a2c6d97`(写入守卫)、`cdcdd9c4d`(概览页设置引导开关)、`82ac1b9c8`(错误处理对齐)、`cdf0109a1`(构建换行)、`5efc0afab` + `dda77a629`(CI 化,须成对,见 3.6);官方已合入的跳过对应 commit
 4. 处理可能的冲突,重点核对:
    - `relay/helper/stream_scanner.go` —— 本地改过主 select 与 scanner 错误分支;官方若动 `client_gone` 分支或退出时序需重新评估
    - `relay/common/stream_status.go` —— 本地把 `endOnce` 换成了 `mu + reasonSet`;官方持续在加 `ResponseOutcome` 系列方法,**若官方把 `SetEndReason` 也改成可覆盖,则 #6808 可退役**
