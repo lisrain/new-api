@@ -53,6 +53,22 @@
 
 </div>
 
+## 🧩 About This Repository
+
+> [!NOTE]
+> This is a personal fork of **New API** maintained on the `lisrain/*` branch, based on upstream tag **v1.0.0-rc.38**. Every push to that branch triggers GitHub Actions to run the backend regression tests, build the image, push it to GitHub Container Registry and smoke-test it.
+
+| Item | Description |
+|------|------|
+| 📦 Image | `ghcr.io/lisrain/new-api:<version>` (public, pull without logging in) |
+| 🏗️ Pipeline | `.github/workflows/ghcr-build.yml` — backend regression tests → build → push → smoke test |
+| 🩹 Patches | Upstream PRs #6808 / #6904 / #7088, `fix6649`, a post-disconnect write guard, and an admin switch for the overview setup guide |
+| 📖 Details | [`LOCAL_PATCHES.md`](./LOCAL_PATCHES.md) — every local patch with its upstream status, retirement and upgrade notes |
+
+```bash
+docker pull ghcr.io/lisrain/new-api:v1.0.0-rc.38-1
+```
+
 ## 📝 Project Description
 
 > [!IMPORTANT]
