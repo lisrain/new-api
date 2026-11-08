@@ -59,7 +59,7 @@
 工作流: [ghcr-build.yml](.github/workflows/ghcr-build.yml),触发 `push lisrain/**` 或手动运行。
 
 1. **后端 job**:Go 版本取自 rc.48 `go.mod`(1.26.10);根模块、`relaykit`、新增的 `tokenkit` 分别 `go vet ./...` / `go build ./...`;`make test` 全模块测试;Responses 完成/兼容及 scanner/status 的定向 `-race -parallel=1` 回归。
-2. **前端 job**:与官方同步 Bun **1.4.4**;冻结 lock 安装,`bun check -b`、`bun run lint`、Vitest 全量测试及生产构建;手动版本覆盖与最终镜像版本一致。
+2. **前端 job**:与官方同步 Bun **1.4.4**;冻结 lock 安装,`bun check -b`、本地补丁 TS/TSX 文件强制 lint、Vitest 全量测试及生产构建;手动版本覆盖与最终镜像版本一致。lint 通过 `git diff` 与对应官方 tag 比较选取文件,不关闭任何规则。首次全量 lint 报出的错误均位于 rc.48 官方未修改文件;本次不额外引入无关的上游风格清理,类型/测试/生产构建仍保持全量。
 3. **数据库 job**:临时 MySQL 8.0 / PostgreSQL 15 service 与真实 SQLite;接通 `TEST_*_DSN` 和 `AUDIT_*_DSN`,不同包使用不同空库并串行运行。用 Go JSON 测试事件断言三库新建/升级子测试实际 PASS,不能靠被 SKIP 的普通 CI 绿灯认定兼容。实际 `SELECT version()` / `sqlite_version()` 写入运行摘要。
 4. **rc.39 实际升级样本**:云端检出并编译固定旧补丁提交 `4de90e19f...`;由旧二进制真实创建三种数据库 schema,放入代表性 user/token/channel/历史日志与已关闭的概览开关;目标二进制在同一批数据库启动两次,验证数据、令牌默认权限、用户名唯一性和开关持久化。MySQL/PostgreSQL 同时覆盖独立日志库,不连接任何部署数据库。
 5. **发布门禁**:上述三个 job 全成功后才构建 linux/amd64 候选镜像;先容器冒烟断言 `/api/status` success、默认开关 true、版本精确一致,再登录 GHCR 推送双 tag。**冒烟失败不会发布版本 tag**。保留 `gha scope=newapi-image,mode=max` 层缓存,不改官方 Dockerfile/PGO/镜像工具链。
