@@ -1,7 +1,6 @@
 name: Build and publish image to GHCR
 
-# VERSION 文件是唯一版本来源,不监听 tag:fork 里带着上游 tag,
-# 按 tag 构建会把本地补丁分支的内容刷成官方版本号。
+# VERSION is the version source. Upstream tags never trigger fork builds.
 on:
   push:
     branches:
@@ -9,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '覆盖 VERSION(留空则用仓库内 VERSION 文件)'
+        description: 'Override VERSION (leave empty to use the file)'
         required: false
         type: string
 
@@ -19,22 +18,20 @@ concurrency:
 
 permissions:
   contents: read
-  packages: write
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/new-api
 
 jobs:
   test:
-    name: Backend regression tests
+    name: Backend vet, build, test and stream regression
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     env:
       GOWORK: 'off'
     steps:
       - name: Check out
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
@@ -42,115 +39,336 @@ jobs:
           cache-dependency-path: |
             go.sum
             relaykit/go.sum
-
+            tokenkit/go.sum
       - name: Create frontend embed placeholder
         run: |
           mkdir -p web/dist
           touch web/dist/index.html
-
-      - name: Relay helper regression
-        run: go test ./relay/helper/... -run "ClientGone|ClientCancel|CompletedStream|SkipsGrace|HandlerStop" -count=1 -v
-
-      - name: OpenAI relay regression
-        run: go test ./relay/channel/openai/ -run "MarksDoneOnCompleted|AddsMissingItemCollections|ResponsesToChatStream|ImageStream" -count=1 -v
-
-      - name: Relay packages
-        run: |
-          go test ./relay/channel/openai/ ./relay/channel/claude/ ./relay/channel/gemini/ ./relay/ -count=1
-          go test ./relay/common/... -count=1
-
-      - name: Responses usage
-        run: go test ./service -run "ResponsesUsage" -count=1
-
+      - name: Vet root module
+        run: go vet ./...
+      - name: Vet relaykit independently
+        working-directory: relaykit
+        run: go vet ./...
+      - name: Vet tokenkit independently
+        working-directory: tokenkit
+        run: go vet ./...
+      - name: Build root module
+        run: go build ./...
       - name: Build relaykit independently
         working-directory: relaykit
         run: go build ./...
+      - name: Build tokenkit independently
+        working-directory: tokenkit
+        run: go build ./...
+      - name: Test root, relaykit and tokenkit modules
+        run: make test
+      - name: Responses completion and compatibility race regression
+        run: |
+          go test -race -parallel=1 ./relay/channel/openai ./relay/helper ./relay/common \
+            -run 'Test(OaiResponsesStreamHandler(CompletionLifecycle|AddsMissingItemCollections)|StreamScannerHandler_|StreamStatus_)' \
+            -count=1 -timeout=5m
 
-  build:
-    name: Build & push (linux/amd64)
-    needs: [test]
+  frontend:
+    name: Frontend typecheck, lint, test and build
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: web
     steps:
       - name: Check out
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.4'
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Typecheck
+        run: bun check -b
+      - name: Lint
+        run: bun run lint
+      - name: Test
+        run: bun run test
+      - name: Production build
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          VERSION="${INPUT_VERSION:-$(cat ../VERSION)}"
+          DISABLE_ESLINT_PLUGIN=true VITE_REACT_APP_VERSION="$VERSION" bun run build
 
+  database:
+    name: Real database matrix and rc39 upgrade
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      GOWORK: 'off'
+      PGPASSWORD: newapi-ci
+      TEST_MYSQL_DSN: 'root:newapi-ci@tcp(127.0.0.1:3306)/newapi_model_test?charset=utf8mb4&parseTime=true&loc=UTC'
+      TEST_POSTGRES_DSN: 'postgres://postgres@127.0.0.1:5432/newapi_model_test?sslmode=disable'
+      TEST_MYSQL_LOG_DSN: 'root:newapi-ci@tcp(127.0.0.1:3306)/newapi_model_log_test?charset=utf8mb4&parseTime=true&loc=UTC'
+      TEST_POSTGRES_LOG_DSN: 'postgres://postgres@127.0.0.1:5432/newapi_model_log_test?sslmode=disable'
+      AUDIT_MYSQL_DSN: 'root:newapi-ci@tcp(127.0.0.1:3306)/newapi_test?charset=utf8mb4&parseTime=true&loc=UTC'
+      AUDIT_POSTGRES_DSN: 'postgres://postgres@127.0.0.1:5432/newapi_test?sslmode=disable'
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: newapi-ci
+          MYSQL_ROOT_HOST: '%'
+          MYSQL_DATABASE: newapi_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pnewapi-ci"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: newapi-ci
+          POSTGRES_DB: newapi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d newapi_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            relaykit/go.sum
+            tokenkit/go.sum
+      - name: Prepare disposable test databases
+        env:
+          MYSQL_CONTAINER: ${{ job.services.mysql.id }}
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          mkdir -p web/dist
+          touch web/dist/index.html
+          for name in newapi_model_test newapi_model_log_test newapi_controller_test newapi_controller_log_test; do
+            docker exec "$MYSQL_CONTAINER" mysql -uroot -pnewapi-ci \
+              -e "CREATE DATABASE $name CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+            docker exec "$POSTGRES_CONTAINER" psql -U postgres -d newapi_test \
+              -v ON_ERROR_STOP=1 -c "CREATE DATABASE $name"
+          done
+      - name: Model database and migration tests
+        run: |
+          set -euo pipefail
+          go test ./model -run 'DatabaseMatrix|Migration' -count=1 -timeout=15m -json \
+            | tee "$RUNNER_TEMP/model-database.jsonl"
+      - name: Controller database and migration tests
+        env:
+          TEST_MYSQL_DSN: 'root:newapi-ci@tcp(127.0.0.1:3306)/newapi_controller_test?charset=utf8mb4&parseTime=true&loc=UTC'
+          TEST_POSTGRES_DSN: 'postgres://postgres@127.0.0.1:5432/newapi_controller_test?sslmode=disable'
+          TEST_MYSQL_LOG_DSN: 'root:newapi-ci@tcp(127.0.0.1:3306)/newapi_controller_log_test?charset=utf8mb4&parseTime=true&loc=UTC'
+          TEST_POSTGRES_LOG_DSN: 'postgres://postgres@127.0.0.1:5432/newapi_controller_log_test?sslmode=disable'
+        run: |
+          set -euo pipefail
+          go test ./controller -run 'DatabaseMatrix|Migration|IndependentAuditLogStores' -count=1 -timeout=15m -json \
+            | tee "$RUNNER_TEMP/controller-database.jsonl"
+      - name: Require actual database cases and record versions
+        run: |
+          set -euo pipefail
+          for dialect in sqlite mysql postgres; do
+            for upgrade in false true; do
+              jq -s -e --arg test "TestAuditDatabaseMatrix/$dialect/upgrade=$upgrade" \
+                'any(.[]; .Action == "pass" and .Test == $test)' \
+                "$RUNNER_TEMP/controller-database.jsonl"
+            done
+            jq -s -e --arg test "TestMigrationSchemaStability/$dialect" \
+              'any(.[]; .Action == "pass" and .Test == $test)' \
+              "$RUNNER_TEMP/model-database.jsonl"
+          done
+          {
+            echo '### Database engine versions (real queries)'
+            jq -r 'select(.Output? != null) | .Output | select(contains("database version:"))' \
+              "$RUNNER_TEMP/controller-database.jsonl"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Check out the exact previous patched release
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: 4de90e19f94da7dfae0940d8d35e0d3743834ad0
+          path: .previous
+      - name: Build both versions for the upgrade fixture
+        run: |
+          set -euo pipefail
+          mkdir -p .previous/web/dist
+          touch .previous/web/dist/index.html
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/newapi-current" .
+          (cd .previous && CGO_ENABLED=0 go build -o "$RUNNER_TEMP/newapi-previous" .)
+      - name: Upgrade rc39 data on SQLite, MySQL and PostgreSQL twice
+        env:
+          MYSQL_CONTAINER: ${{ job.services.mysql.id }}
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends sqlite3
+          current_version="${INPUT_VERSION:-$(cat VERSION)}"
+          previous_version=$(cat .previous/VERSION)
+          server_pid=
+          trap 'if [ -n "$server_pid" ]; then kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; fi' EXIT
+          sql() {
+            local store="$1" statement="$2" database="$main_database"
+            if [ "$store" = log ]; then database="$log_database"; fi
+            case "$dialect" in
+              sqlite) sqlite3 "$sqlite_path" "$statement" ;;
+              mysql) docker exec "$MYSQL_CONTAINER" mysql -uroot -pnewapi-ci -N -B "$database" -e "$statement" ;;
+              postgres) docker exec "$POSTGRES_CONTAINER" psql -U postgres -d "$database" -v ON_ERROR_STOP=1 -t -A -c "$statement" ;;
+            esac
+          }
+          start_server() {
+            local binary="$1" version="$2" logfile="$3"
+            SQL_DSN="$main_dsn" LOG_SQL_DSN="$log_dsn" SQLITE_PATH="$sqlite_path" \
+              VERSION="$version" SESSION_SECRET=ci-upgrade-fixture-session-secret \
+              CRYPTO_SECRET=ci-upgrade-fixture-crypto-secret \
+              "$binary" --port 3001 --log-dir "$RUNNER_TEMP/upgrade-logs-$dialect" > "$logfile" 2>&1 &
+            server_pid=$!
+            if ! curl -fsS --retry 30 --retry-connrefused --retry-delay 2 --retry-max-time 90 \
+              http://127.0.0.1:3001/api/status -o "$RUNNER_TEMP/upgrade-status.json"; then
+              cat "$logfile"
+              return 1
+            fi
+            jq -e --arg version "$version" '.success == true and .data.version == $version' \
+              "$RUNNER_TEMP/upgrade-status.json"
+          }
+          stop_server() {
+            kill "$server_pid"
+            wait "$server_pid" || true
+            server_pid=
+          }
+          for dialect in sqlite mysql postgres; do
+            main_database="newapi_upgrade_$dialect"
+            log_database="${main_database}_log"
+            sqlite_path="$RUNNER_TEMP/upgrade-$dialect.db"
+            key_column='"key"'
+            case "$dialect" in
+              sqlite) main_dsn=local; log_dsn= ;;
+              mysql)
+                docker exec "$MYSQL_CONTAINER" mysql -uroot -pnewapi-ci -e \
+                  "CREATE DATABASE $main_database CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE DATABASE $log_database CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+                main_dsn="root:newapi-ci@tcp(127.0.0.1:3306)/$main_database?charset=utf8mb4&parseTime=true"
+                log_dsn="root:newapi-ci@tcp(127.0.0.1:3306)/$log_database?charset=utf8mb4&parseTime=true"
+                key_column='`key`'
+                ;;
+              postgres)
+                docker exec "$POSTGRES_CONTAINER" psql -U postgres -d newapi_test -v ON_ERROR_STOP=1 -c "CREATE DATABASE $main_database"
+                docker exec "$POSTGRES_CONTAINER" psql -U postgres -d newapi_test -v ON_ERROR_STOP=1 -c "CREATE DATABASE $log_database"
+                main_dsn="postgres://postgres@127.0.0.1:5432/$main_database?sslmode=disable"
+                log_dsn="postgres://postgres@127.0.0.1:5432/$log_database?sslmode=disable"
+                ;;
+            esac
+            start_server "$RUNNER_TEMP/newapi-previous" "$previous_version" "$RUNNER_TEMP/previous-$dialect.log"
+            stop_server
+            sql main "INSERT INTO options ($key_column,value) VALUES ('console_setting.setup_guide_enabled','false')"
+            sql main "INSERT INTO users (id,username,password,aff_code,quota,used_quota) VALUES (101,'upgrade-user','fixture-not-a-real-hash','upgrade-aff',1234567,234)"
+            sql main "INSERT INTO tokens (id,user_id,$key_column,name,remain_quota) VALUES (101,101,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','upgrade-token',654321)"
+            sql main "INSERT INTO channels (id,type,$key_column,name,models,priority,channel_info) VALUES (101,1,'fixture-not-a-real-api-key','upgrade-channel','gpt-test',9,'{}')"
+            sql log "INSERT INTO logs (id,user_id,type,content,quota,request_id) VALUES (101,101,2,'upgrade-history',123,'rc39-upgrade-history')"
+            for pass in 1 2; do
+              start_server "$RUNNER_TEMP/newapi-current" "$current_version" "$RUNNER_TEMP/current-$dialect-$pass.log"
+              jq -e '.data.setup_guide_enabled == false' "$RUNNER_TEMP/upgrade-status.json"
+              stop_server
+              [ "$(sql main "SELECT COUNT(*) FROM users WHERE id=101 AND username='upgrade-user' AND quota=1234567 AND used_quota=234")" = 1 ]
+              [ "$(sql main "SELECT COUNT(*) FROM tokens WHERE id=101 AND name='upgrade-token' AND remain_quota=654321 AND $key_column='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' AND COALESCE(allow_user_quota_query,false)=false")" = 1 ]
+              [ "$(sql main "SELECT COUNT(*) FROM channels WHERE id=101 AND name='upgrade-channel' AND models='gpt-test' AND priority=9")" = 1 ]
+              [ "$(sql log "SELECT COUNT(*) FROM logs WHERE id=101 AND content='upgrade-history' AND quota=123 AND request_id='rc39-upgrade-history'")" = 1 ]
+              if sql main "INSERT INTO users (id,username,password,aff_code) VALUES (102,'upgrade-user','fixture-not-a-real-hash','other-aff')"; then
+                echo '::error::User uniqueness was lost during upgrade'
+                exit 1
+              fi
+              echo "$dialect: rc39 data, disabled setup guide and uniqueness preserved (startup $pass)" >> "$GITHUB_STEP_SUMMARY"
+            done
+          done
+
+  build:
+    name: Build, smoke and publish (linux/amd64)
+    needs: [test, frontend, database]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Resolve version
         id: version
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [ -n "$INPUT_VERSION" ]; then
-            printf '%s\n' "$INPUT_VERSION" > VERSION
-          fi
+          set -euo pipefail
+          if [ -n "$INPUT_VERSION" ]; then printf '%s\n' "$INPUT_VERSION" > VERSION; fi
           VERSION=$(cat VERSION)
-          # 用定长的前 9 位:git rev-parse --short 的缩写长度取决于本地对象库
-          # 大小,而 checkout 默认 fetch-depth: 1,同一个 commit 会缩成 7 位。
+          if ! [[ "$VERSION" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo '::error::VERSION is not a valid Docker tag'
+            exit 1
+          fi
           SHORT_SHA="${GITHUB_SHA:0:9}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
-          echo "Building ${VERSION} (${SHORT_SHA})"
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-
-      - name: Log in to GHCR
-        uses: docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4 # v4.3.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # cache-to 必须 mode=max,否则只导出最终镜像里那几个层,
-      # bun install 与 go mod download 这两层不会被缓存。
-      # 注意:BuildKit 的 RUN --mount=type=cache 不会被导出到 gha 缓存,
-      # 这里能跨 run 复用的只有层缓存。
-      - name: Build & push
+      # mode=max exports dependency layers; cache mounts are not exported to gha.
+      - name: Build candidate image
         id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           platforms: linux/amd64
-          push: true
+          load: true
+          push: false
           tags: |
             ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
             ${{ env.IMAGE }}:${{ steps.version.outputs.version }}-${{ steps.version.outputs.short_sha }}
           cache-from: type=gha,scope=newapi-image
           cache-to: type=gha,mode=max,scope=newapi-image,ignore-error=true
           provenance: false
-
-      # 复刻 LOCAL_PATCHES 第 5 节的冒烟:起容器探 /api/status。
-      # setup_guide_enabled 是本地补丁独有的键,用来确认镜像里真的是补丁版。
-      - name: Smoke test
+      - name: Smoke test before publishing
         env:
           IMAGE_TAG: ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          docker run -d --name newapi-smoke -p 3000:3000 "$IMAGE_TAG"
+          docker run -d --name newapi-smoke -p 127.0.0.1:3000:3000 "$IMAGE_TAG"
           trap 'docker rm -f newapi-smoke' EXIT
-          ready=
-          for _ in $(seq 1 30); do
-            if curl -fsS http://localhost:3000/api/status -o status.json; then
-              ready=1
-              break
-            fi
-            sleep 2
-          done
-          if [ -z "$ready" ]; then
-            echo "::error::/api/status did not become ready within 60s"
-            docker logs newapi-smoke || true
+          if ! curl -fsS --retry 30 --retry-connrefused --retry-delay 2 --retry-max-time 90 \
+            http://127.0.0.1:3000/api/status -o "$RUNNER_TEMP/status.json"; then
+            docker logs newapi-smoke
             exit 1
           fi
-          cat status.json
-          grep -q '"success":true' status.json
-          grep -q '"setup_guide_enabled":true' status.json
-
-      - name: Image summary
+          jq -e --arg version "$EXPECTED_VERSION" \
+            '.success == true and .data.setup_guide_enabled == true and .data.version == $version' \
+            "$RUNNER_TEMP/status.json"
+      - name: Log in to GHCR
+        uses: docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4 # v4.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish validated image
+        env:
+          IMAGE_VERSION: ${{ steps.version.outputs.version }}
+          SHORT_SHA: ${{ steps.version.outputs.short_sha }}
         run: |
+          set -euo pipefail
+          docker push "$IMAGE:$IMAGE_VERSION"
+          docker push "$IMAGE:$IMAGE_VERSION-$SHORT_SHA"
           {
-            echo "### Image"
-            echo '```'
-            echo "${IMAGE}:${{ steps.version.outputs.version }}"
-            echo "${{ steps.build.outputs.digest }}"
-            echo '```'
+            echo '### Validated image'
+            echo "$IMAGE:$IMAGE_VERSION"
+            echo "$IMAGE:$IMAGE_VERSION-$SHORT_SHA"
+            docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$IMAGE_VERSION"
           } >> "$GITHUB_STEP_SUMMARY"
