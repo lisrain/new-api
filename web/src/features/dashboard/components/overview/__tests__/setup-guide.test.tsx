@@ -143,7 +143,11 @@ describe('overview setup guide', () => {
         })
       )
 
-      for (const name of ['Setup guide', 'Show setup guide', 'Hide setup guide']) {
+      for (const name of [
+        'Setup guide',
+        'Show setup guide',
+        'Hide setup guide',
+      ]) {
         expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
       }
       expect(
