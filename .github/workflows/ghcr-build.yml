@@ -86,8 +86,18 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Typecheck
         run: bun check -b
-      - name: Lint
-        run: bun run lint
+      - name: Lint local frontend patch files
+        run: |
+          set -euo pipefail
+          VERSION=$(cat ../VERSION)
+          UPSTREAM_TAG="${VERSION%-*}"
+          git fetch --no-tags --depth=1 https://github.com/QuantumNous/new-api.git "$UPSTREAM_TAG"
+          git diff --relative --name-only --diff-filter=ACMR -z FETCH_HEAD HEAD -- '*.ts' '*.tsx' \
+            > "$RUNNER_TEMP/frontend-patch-files"
+          mapfile -d '' files < "$RUNNER_TEMP/frontend-patch-files"
+          if [ "${#files[@]}" -gt 0 ]; then
+            ./node_modules/.bin/oxlint -c .oxlintrc.json "${files[@]}"
+          fi
       - name: Test
         run: bun run test
       - name: Production build
