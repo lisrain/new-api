@@ -59,17 +59,17 @@
 ## 🧩 About This Repository
 
 > [!NOTE]
-> This is a personal fork of **New API** maintained on the `lisrain/*` branch, based on upstream tag **v1.0.0-rc.39**. Every push to that branch triggers GitHub Actions to run the backend regression tests, build the image, push it to GitHub Container Registry and smoke-test it.
+> This is a personal fork of **New API** maintained on the `lisrain/*` branch, based on upstream tag **v1.0.0-rc.48**. Every push to that branch triggers GitHub Actions to validate the backend, frontend and database migrations, build and smoke-test a candidate image, then publish it to GitHub Container Registry.
 
 | Item | Description |
 |------|------|
 | 📦 Image | `ghcr.io/lisrain/new-api:<version>` (public, pull without logging in) |
-| 🏗️ Pipeline | `.github/workflows/ghcr-build.yml` — backend regression tests → build → push → smoke test |
-| 🩹 Patches | Upstream PRs #6808 / #6904 / #7088, `fix6649`, a post-disconnect write guard, and an admin switch for the overview setup guide |
+| 🏗️ Pipeline | `.github/workflows/ghcr-build.yml` — backend/frontend/database checks → candidate build → smoke test → publish |
+| 🩹 Patches | Responses item compatibility from PR #7088, the overview setup-guide admin switch, LF build inputs, and fork-safe CI; stream completion now follows upstream PR #7956 |
 | 📖 Details | [`LOCAL_PATCHES.md`](./LOCAL_PATCHES.md) — every local patch with its upstream status, retirement and upgrade notes |
 
 ```bash
-docker pull ghcr.io/lisrain/new-api:v1.0.0-rc.39-1
+docker pull ghcr.io/lisrain/new-api:v1.0.0-rc.48-1
 ```
 
 ## 📝 Project Description
