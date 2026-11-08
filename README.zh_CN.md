@@ -59,17 +59,17 @@
 ## 🧩 本仓库说明
 
 > [!NOTE]
-> 这是 **New API** 的个人分支,维护在 `lisrain/*` 分支上,基线为上游 tag **v1.0.0-rc.39**。每次向该分支推送都会触发 GitHub Actions:跑后端回归测试 → 构建镜像 → 推送至 GitHub Container Registry → 容器冒烟。
+> 这是 **New API** 的个人分支,维护在 `lisrain/*` 分支上,基线为上游 tag **v1.0.0-rc.48**。每次向该分支推送都会触发 GitHub Actions:后端、前端及数据库迁移校验 → 构建候选镜像并冒烟 → 推送至 GitHub Container Registry。
 
 | 项目 | 说明 |
 |------|------|
 | 📦 镜像 | `ghcr.io/lisrain/new-api:<版本>`(公开包,拉取无需登录) |
-| 🏗️ 流水线 | `.github/workflows/ghcr-build.yml` — 后端回归测试 → 构建 → 推送 → 冒烟 |
-| 🩹 补丁 | 上游 PR #6808 / #6904 / #7088,`fix6649`,客户端断开后的写入守卫,概览页设置引导开关 |
+| 🏗️ 流水线 | `.github/workflows/ghcr-build.yml` — 后端/前端/数据库校验 → 候选构建 → 冒烟 → 发布 |
+| 🩹 补丁 | PR #7088 的 Responses item 兼容、概览设置引导开关、构建输入 LF 与 fork CI 守卫;流结束逻辑已收敛到官方 PR #7956 |
 | 📖 详情 | [`LOCAL_PATCHES.md`](./LOCAL_PATCHES.md) — 每个补丁的上游状态、退役条件与升级注意事项 |
 
 ```bash
-docker pull ghcr.io/lisrain/new-api:v1.0.0-rc.39-1
+docker pull ghcr.io/lisrain/new-api:v1.0.0-rc.48-1
 ```
 
 ## 📝 项目说明
