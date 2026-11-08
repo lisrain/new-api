@@ -27,6 +27,63 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestOaiResponsesStreamHandlerAddsMissingItemCollections(t *testing.T) {
+	oldMode, oldTimeout := gin.Mode(), constant.StreamingTimeout
+	gin.SetMode(gin.TestMode)
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() {
+		gin.SetMode(oldMode)
+		constant.StreamingTimeout = oldTimeout
+	})
+
+	for _, tc := range []struct {
+		name, event, item, wantItem string
+	}{
+		{"missing reasoning summary", "response.output_item.added", `{"id":"rs_1","type":"reasoning"}`, `{"id":"rs_1","type":"reasoning","summary":[]}`},
+		{"missing message content", "response.output_item.added", `{"id":"msg_1","type":"message","role":"assistant"}`, `{"id":"msg_1","type":"message","role":"assistant","content":[]}`},
+		{"existing empty summary", "response.output_item.added", `{"id":"rs_1","type":"reasoning","summary":[]}`, `{"id":"rs_1","type":"reasoning","summary":[]}`},
+		{"existing populated summary", "response.output_item.added", `{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"kept"}]}`, `{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"kept"}]}`},
+		{"existing empty content", "response.output_item.added", `{"id":"msg_1","type":"message","content":[]}`, `{"id":"msg_1","type":"message","content":[]}`},
+		{"existing populated content", "response.output_item.added", `{"id":"msg_1","type":"message","content":[{"type":"output_text","text":"kept"}]}`, `{"id":"msg_1","type":"message","content":[{"type":"output_text","text":"kept"}]}`},
+		{"explicit null summary", "response.output_item.added", `{"id":"rs_1","type":"reasoning","summary":null}`, `{"id":"rs_1","type":"reasoning","summary":null}`},
+		{"explicit null content", "response.output_item.added", `{"id":"msg_1","type":"message","content":null}`, `{"id":"msg_1","type":"message","content":null}`},
+		{"other item type", "response.output_item.added", `{"id":"fc_1","type":"function_call","name":"lookup"}`, `{"id":"fc_1","type":"function_call","name":"lookup"}`},
+		{"non-added event", "response.output_item.done", `{"id":"rs_1","type":"reasoning"}`, `{"id":"rs_1","type":"reasoning"}`},
+		{"missing item", "response.output_item.added", `null`, `null`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const envelope = `{"type":%q,"sequence_number":9007199254740993,"output_index":0,"item":%s,"vendor_extension":{"kept":true}}`
+			payload := fmt.Sprintf(envelope, tc.event, tc.item)
+			terminal := `{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":7,"output_tokens":5,"total_tokens":12}}}`
+			body := "data: " + payload + "\n\ndata: " + terminal + "\n\n"
+			c, recorder, resp, info := newResponsesChatTestContext(t, body, true)
+
+			usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+			require.Nil(t, apiErr)
+			require.NotNil(t, usage)
+			assert.Equal(t, 7, usage.PromptTokens)
+			assert.Equal(t, 5, usage.CompletionTokens)
+			assert.Equal(t, 12, usage.TotalTokens)
+
+			var frames []string
+			for line := range strings.SplitSeq(recorder.Body.String(), "\n") {
+				if data, ok := strings.CutPrefix(line, "data: "); ok {
+					frames = append(frames, data)
+				}
+			}
+			require.Len(t, frames, 2)
+			assert.JSONEq(t, fmt.Sprintf(envelope, tc.event, tc.wantItem), frames[0])
+			assert.Contains(t, frames[0], `"sequence_number":9007199254740993`, "raw JSON edits must preserve integer precision")
+			if tc.item == tc.wantItem {
+				assert.Equal(t, payload, frames[0], "existing collections and unrelated events must remain byte-for-byte unchanged")
+			}
+			assert.Equal(t, terminal, frames[1])
+			assert.True(t, info.StreamStatus.IsNormalEnd())
+			assert.False(t, info.StreamStatus.HasErrors())
+		})
+	}
+}
+
 // The next upstream read stays blocked until the scanner closes its body.
 // The channels let the downstream writer force cancellation during the final
 // callback without depending on sleeps or goroutine scheduling.

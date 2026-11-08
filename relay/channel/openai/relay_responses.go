@@ -89,6 +89,12 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			data = string(rewriteSGLangResponsesCreatedAt(info, []byte(data), "response.created_at", streamResponse.Response.CreatedAt))
 		}
 		accumulator.Observe(&streamResponse, common.StringToByteSlice(data))
+		var err error
+		data, err = normalizeResponsesOutputItemAdded(data, &streamResponse)
+		if err != nil {
+			sr.Error(err)
+			return
+		}
 		if err := helper.ResponseChunkData(c, streamResponse, data); err != nil {
 			sr.Stop(err)
 			return
@@ -102,6 +108,34 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	common.SetContextKey(c, constant.ContextKeyResponseStreamStatus, info.StreamStatus)
 	info.StreamStatus.RequireTerminal()
 	return accumulator.Finish(), nil
+}
+
+// normalizeResponsesOutputItemAdded preserves optional upstream fields and only
+// supplies the empty collections required by Responses item consumers (PR #7088).
+func normalizeResponsesOutputItemAdded(data string, event *dto.ResponsesStreamResponse) (string, error) {
+	if event.Type != "response.output_item.added" || event.Item == nil {
+		return data, nil
+	}
+
+	var collectionPath string
+	switch event.Item.Type {
+	case "reasoning":
+		collectionPath = "item.summary"
+	case "message":
+		collectionPath = "item.content"
+	default:
+		return data, nil
+	}
+
+	payload := common.StringToByteSlice(data)
+	if ojson.GetBytes(payload, collectionPath).Exists() {
+		return data, nil
+	}
+	patched, err := ojson.SetRawBytes(payload, collectionPath, []byte("[]"))
+	if err != nil {
+		return data, err
+	}
+	return string(patched), nil
 }
 
 func rewriteSGLangResponsesCreatedAt(info *relaycommon.RelayInfo, payload []byte, path string, createdAt dto.IntValue) []byte {
