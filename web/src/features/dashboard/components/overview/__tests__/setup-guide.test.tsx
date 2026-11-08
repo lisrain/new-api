@@ -111,32 +111,53 @@ async function renderOverview() {
 
 describe('overview setup guide', () => {
   it.each([
-    { name: 'completed expanded guide', complete: true, preference: 'expanded' },
-    { name: 'incomplete expanded guide', complete: false, preference: 'expanded' },
-    { name: 'incomplete collapsed guide', complete: false, preference: 'collapsed' },
-  ])('hides the $name when the admin disables it without hiding usage', async (scenario) => {
-    setupGuideEnabled = false
-    window.localStorage.setItem(storageKey, scenario.preference)
-    if (!scenario.complete) {
-      useAuthStore.getState().auth.setUser({ id: 1, username: 'new-user', role: 1 })
-    }
-    await renderOverview()
-    await waitFor(() =>
-      expect(client.getQueryData(['status'])).toMatchObject({
-        setup_guide_enabled: false,
-      })
-    )
+    {
+      name: 'completed expanded guide',
+      complete: true,
+      preference: 'expanded',
+    },
+    {
+      name: 'incomplete expanded guide',
+      complete: false,
+      preference: 'expanded',
+    },
+    {
+      name: 'incomplete collapsed guide',
+      complete: false,
+      preference: 'collapsed',
+    },
+  ])(
+    'hides the $name when the admin disables it without hiding usage',
+    async (scenario) => {
+      setupGuideEnabled = false
+      window.localStorage.setItem(storageKey, scenario.preference)
+      if (!scenario.complete) {
+        useAuthStore
+          .getState()
+          .auth.setUser({ id: 1, username: 'new-user', role: 1 })
+      }
+      await renderOverview()
+      await waitFor(() =>
+        expect(client.getQueryData(['status'])).toMatchObject({
+          setup_guide_enabled: false,
+        })
+      )
 
-    for (const name of ['Setup guide', 'Show setup guide', 'Hide setup guide']) {
-      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
+      for (const name of ['Setup guide', 'Show setup guide', 'Hide setup guide']) {
+        expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
+      }
+      expect(
+        screen.queryByRole('heading', {
+          name: 'Build on your API gateway in minutes',
+        })
+      ).not.toBeInTheDocument()
+      expect(screen.queryByText(/Setup progress:/)).not.toBeInTheDocument()
+      expect(
+        screen.getByRole('heading', { name: 'Usage at a glance' })
+      ).toBeVisible()
+      expect(window.localStorage.getItem(storageKey)).toBe(scenario.preference)
     }
-    expect(
-      screen.queryByRole('heading', { name: 'Build on your API gateway in minutes' })
-    ).not.toBeInTheDocument()
-    expect(screen.queryByText(/Setup progress:/)).not.toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Usage at a glance' })).toBeVisible()
-    expect(window.localStorage.getItem(storageKey)).toBe(scenario.preference)
-  })
+  )
 
   it('restores the personal expansion preference when the admin re-enables the guide', async () => {
     setupGuideEnabled = false
@@ -147,18 +168,21 @@ describe('overview setup guide', () => {
         setup_guide_enabled: false,
       })
     )
-    expect(screen.queryByRole('button', { name: 'Setup guide' })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Setup guide' })
+    ).not.toBeInTheDocument()
 
     setupGuideEnabled = true
     await act(async () => {
       await client.invalidateQueries({ queryKey: ['status'] })
     })
-    expect(await screen.findByRole('button', { name: 'Setup guide' })).toHaveAttribute(
-      'aria-expanded',
-      'true'
-    )
     expect(
-      screen.getByRole('heading', { name: 'Build on your API gateway in minutes' })
+      await screen.findByRole('button', { name: 'Setup guide' })
+    ).toHaveAttribute('aria-expanded', 'true')
+    expect(
+      screen.getByRole('heading', {
+        name: 'Build on your API gateway in minutes',
+      })
     ).toBeVisible()
   })
 
