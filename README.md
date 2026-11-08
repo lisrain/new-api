@@ -59,7 +59,7 @@
 ## 🧩 About This Repository
 
 > [!NOTE]
-> This is a personal fork of **New API** maintained on the `lisrain/*` branch, based on upstream tag **v1.0.0-rc.48**. Every push to that branch triggers GitHub Actions to validate the backend, frontend and database migrations, build and smoke-test a candidate image, then publish it to GitHub Container Registry.
+> This is a personal fork of **New API** maintained on the `lisrain/*` branch, based on upstream tag **v1.0.0-rc.49**. Every push to that branch triggers GitHub Actions to validate the backend, frontend and database migrations, build and smoke-test a candidate image, then publish it to GitHub Container Registry.
 
 | Item | Description |
 |------|------|
@@ -69,7 +69,7 @@
 | 📖 Details | [`LOCAL_PATCHES.md`](./LOCAL_PATCHES.md) — every local patch with its upstream status, retirement and upgrade notes |
 
 ```bash
-docker pull ghcr.io/lisrain/new-api:v1.0.0-rc.48-1
+docker pull ghcr.io/lisrain/new-api:v1.0.0-rc.49-1
 ```
 
 ## 📝 Project Description
