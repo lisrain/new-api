@@ -24,7 +24,7 @@ const mode = process.argv[2]
 
 if (mode !== '--check' && mode !== '--write') {
   console.error(
-    'Usage: node scripts/format-with-protected-headers.mjs --check|--write'
+    'Usage: node scripts/format-with-protected-headers.mjs --check|--write [files...]'
   )
   process.exit(2)
 }
@@ -131,9 +131,12 @@ function listChangedFiles(before, files) {
   return changed
 }
 
-const files = walk(root).filter(
-  (file) => statSync(file).size < 10 * 1024 * 1024
-)
+const formatTargets = process.argv.slice(3)
+const files = (
+  formatTargets.length > 0
+    ? formatTargets.map((file) => join(root, file))
+    : walk(root)
+).filter((file) => statSync(file).size < 10 * 1024 * 1024)
 const before = mode === '--check' ? snapshotFiles(files) : null
 let headers = new Map()
 let exitCode = 0
@@ -142,7 +145,14 @@ try {
   headers = stripProtectedHeaders(files)
   const result = spawnSync(
     'oxfmt',
-    ['-c', '.oxfmtrc.json', '--ignore-path', '.gitignore', '--write', '.'],
+    [
+      '-c',
+      '.oxfmtrc.json',
+      '--ignore-path',
+      '.gitignore',
+      '--write',
+      ...(formatTargets.length > 0 ? formatTargets : ['.']),
+    ],
     {
       cwd: root,
       stdio: 'inherit',

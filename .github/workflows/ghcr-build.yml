@@ -92,11 +92,24 @@ jobs:
           VERSION=$(cat ../VERSION)
           UPSTREAM_TAG="${VERSION%-*}"
           git fetch --no-tags --depth=1 https://github.com/QuantumNous/new-api.git "$UPSTREAM_TAG"
-          git diff --relative --name-only --diff-filter=ACMR -z FETCH_HEAD HEAD -- '*.ts' '*.tsx' \
+          git diff --relative --name-only --diff-filter=ACMR -z FETCH_HEAD HEAD -- '*.js' '*.jsx' '*.mjs' '*.ts' '*.tsx' \
             > "$RUNNER_TEMP/frontend-patch-files"
           mapfile -d '' files < "$RUNNER_TEMP/frontend-patch-files"
           if [ "${#files[@]}" -gt 0 ]; then
             ./node_modules/.bin/oxlint -c .oxlintrc.json "${files[@]}"
+          fi
+      - name: Format check local frontend patch files
+        run: |
+          set -euo pipefail
+          git diff --relative --name-only --diff-filter=ACMR -z FETCH_HEAD HEAD -- '*.js' '*.jsx' '*.mjs' '*.ts' '*.tsx' '*.json' \
+            > "$RUNNER_TEMP/frontend-format-files"
+          mapfile -d '' files < "$RUNNER_TEMP/frontend-format-files"
+          if [ "${#files[@]}" -gt 0 ]; then
+            if ! bun run format:check "${files[@]}"; then
+              bun run format "${files[@]}"
+              git diff -- "${files[@]}"
+              exit 1
+            fi
           fi
       - name: Test
         run: bun run test
@@ -246,7 +259,7 @@ jobs:
               CRYPTO_SECRET=ci-upgrade-fixture-crypto-secret \
               "$binary" --port 3001 --log-dir "$RUNNER_TEMP/upgrade-logs-$dialect" > "$logfile" 2>&1 &
             server_pid=$!
-            if ! curl -fsS --retry 30 --retry-connrefused --retry-delay 2 --retry-max-time 90 \
+            if ! curl -fsS --retry 30 --retry-connrefused --retry-all-errors --retry-delay 2 --max-time 5 --retry-max-time 90 \
               http://127.0.0.1:3001/api/status -o "$RUNNER_TEMP/upgrade-status.json"; then
               cat "$logfile"
               return 1
@@ -353,10 +366,18 @@ jobs:
         run: |
           set -euo pipefail
           docker run -d --name newapi-smoke -p 127.0.0.1:3000:3000 "$IMAGE_TAG"
-          trap 'docker rm -f newapi-smoke' EXIT
-          if ! curl -fsS --retry 30 --retry-connrefused --retry-delay 2 --retry-max-time 90 \
+          cleanup_smoke() {
+            result=$?
+            if [ "$result" -ne 0 ]; then
+              docker logs newapi-smoke || true
+              if [ -f "$RUNNER_TEMP/status.json" ]; then cat "$RUNNER_TEMP/status.json"; fi
+            fi
+            docker rm -f newapi-smoke > /dev/null || true
+            return "$result"
+          }
+          trap cleanup_smoke EXIT
+          if ! curl -fsS --retry 30 --retry-connrefused --retry-all-errors --retry-delay 2 --max-time 5 --retry-max-time 90 \
             http://127.0.0.1:3000/api/status -o "$RUNNER_TEMP/status.json"; then
-            docker logs newapi-smoke
             exit 1
           fi
           jq -e --arg version "$EXPECTED_VERSION" \
