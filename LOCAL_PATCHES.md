@@ -60,7 +60,7 @@
 
 1. **后端 job**:Go 版本取自 rc.48 `go.mod`(1.26.10);根模块、`relaykit`、新增的 `tokenkit` 分别 `go vet ./...` / `go build ./...`;`make test` 全模块测试;Responses 完成/兼容及 scanner/status 的定向 `-race -parallel=1` 回归。
 2. **前端 job**:与官方同步 Bun **1.4.4**;冻结 lock 安装,`bun check -b`、本地补丁 JS/TS 文件强制 lint、补丁 JS/TS/JSON 格式检查、Vitest 全量测试及生产构建;手动版本覆盖与最终镜像版本一致。lint/格式检查通过 `git diff` 与对应官方 tag 比较选取文件,不关闭任何规则。既有版权头保护格式脚本仅增加可选文件参数,无参数时仍处理全目录;格式错误只在云端生成差异供修正,不会自动修改仓库远程。首次全量 lint 报出的错误均位于 rc.48 官方未修改文件;本次不额外引入无关的上游风格清理,类型/测试/生产构建仍保持全量。
-3. **数据库 job**:临时 MySQL 8.0 / PostgreSQL 15 service 与真实 SQLite;接通 `TEST_*_DSN` 和 `AUDIT_*_DSN`,不同包使用不同空库并串行运行。用 Go JSON 测试事件断言三库新建/升级子测试实际 PASS,不能靠被 SKIP 的普通 CI 绿灯认定兼容。实际 `SELECT version()` / `sqlite_version()` 写入运行摘要。
+3. **数据库 job**:临时 MySQL 8.0 / PostgreSQL 15 service 与真实 SQLite;接通 `TEST_*_DSN` 和 `AUDIT_*_DSN`,不同包使用不同空库并串行运行。用 Go JSON 测试事件断言三库新建/升级子测试实际 PASS,不能靠被 SKIP 的普通 CI 绿灯认定兼容。实际 `SELECT version()` / `sqlite_version()` 写入运行摘要。2026-11-08 首轮实测版本为 **SQLite 3.50.4 / MySQL 8.0.46 / PostgreSQL 15.19**,三库新建/历史升级及固定 rc.39 样本双启动验证均通过。
 4. **rc.39 实际升级样本**:云端检出并编译固定旧补丁提交 `4de90e19f...`;由旧二进制真实创建三种数据库 schema,放入代表性 user/token/channel/历史日志与已关闭的概览开关;目标二进制在同一批数据库启动两次,验证数据、令牌默认权限、用户名唯一性和开关持久化。MySQL/PostgreSQL 同时覆盖独立日志库,不连接任何部署数据库。
 5. **发布门禁**:上述三个 job 全成功后才构建 linux/amd64 候选镜像;先容器冒烟断言 `/api/status` success、默认开关 true、版本精确一致,再登录 GHCR 推送双 tag。**冒烟失败不会发布版本 tag**。保留 `gha scope=newapi-image,mode=max` 层缓存,不改官方 Dockerfile/PGO/镜像工具链。容器刚启动时 Docker 端口代理可能先返回 connection reset;readiness 使用有界 `curl --retry-all-errors`(单次最多5秒、总窗口90秒),任何超时或断言失败仍输出容器日志并阻止发布,不把启动瞬态误当作应用故障。
 
@@ -70,7 +70,7 @@
 
 1. `git fetch origin --tags`,用 `gh release view` 选择官方最新已发布 tag,不要默认采用 main。
 2. 建 `lisrain/rcNN-patched` 新分支;首先重新核对 **#7088 是否已合入或有等价 raw item 规范化**。已吸收时退役 `5b8b49204`,不要重复回放。
-3. 重放概览开关、错误处理、LF、fork 守卫、九位 SHA 和 README 说明;保留本次扩充的云端验证配置。新版本若继续使用 tokenkit,必须保留其独立验证。
+3. 重放概览开关、错误处理、LF、fork 守卫、九位 SHA 和 README 说明;保留本次扩充的云端验证配置和格式脚本可选文件参数。新版本若继续使用 tokenkit,必须保留其独立验证。数据库升级样本的 `.previous` 检出 ref 应同步为当时已部署的旧补丁提交,不能永久固定在 rc.39。
 4. **不再从 rc.39 回放 #6808/#6904、fix6649/grace 或 nil 写守卫**。未来终态/取消改动以官方 #7956 的成功送达契约为依据,不能仅为日志显示正常而改变账单/健康分类。
 5. 更新 VERSION 与当前维护记录,提交、push 后用 `gh run list/view/watch` 跟踪云端;红灯按实际错误修正再提交,不在本机补跑测试。
 6. 云端成功后部署更新仍是独立步骤;升级前备份数据库,多节点同时升级并保持相同 SESSION_SECRET/CRYPTO_SECRET。此次仅生成可部署镜像,不自动替换现有服务。
