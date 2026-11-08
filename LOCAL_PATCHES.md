@@ -8,7 +8,7 @@
 ### 版本选择与执行边界
 
 - 用 `gh release list --repo QuantumNous/new-api` 核实最新发布为 **v1.0.0-rc.49**,发布时间 `2026-11-08T05:06:38Z`;GitHub 标记 `isDraft=false`、`isPrerelease=false`。名称虽含 rc,本次按官方已发布 release 选择,不是跟随 main 的未发布代码。
-- 上一轮 **rc.48 已完成闭环**:`lisrain/rc48-patched` 的 `028c6cb09` 在 Actions 运行 `42445475009` 中四个 job 全部成功(后端含 race、真实三库与 rc39 升级、前端类型/lint/测试/构建、候选镜像构建+冒烟+GHCR 发布),镜像 `ghcr.io/lisrain/new-api:v1.0.0-rc.48-1` 及其九位 SHA 追踪 tag 已推送。该分支保留,备份 tag **`backup/lisrain-rc48-patched`** 指向 `028c6cb09`。
+- 上一轮 **rc.48 已完成闭环**:`lisrain/rc48-patched` 的 `028c6cb09` 在 Actions 运行 `42445475009` 中四个 job 全部成功(后端含 race、真实三库与 rc39 升级、前端类型/lint/测试/构建、候选镜像构建+冒烟+GHCR 发布),镜像 `ghcr.io/lisrain/new-api:v1.0.0-rc.48-1` 及其九位 SHA 追踪 tag 已推送。该分支保留,备份 tag **`backup/lisrain-rc48-patched`** 指向 `028c6cb09`。rc.48 期间修过两次云端门禁(前端 lint 只针对本地补丁差异、容器 readiness 有界重试启动瞬态),这两项修复随补丁集一并带入 rc.49。
 - rc.48 → rc.49 共 **15 个提交**。此次查询时 `origin/main` 在 rc.49 后另有 1 个提交(`8faf1d45e` 登录页法律条款翻译),**没有合入这些未发布提交**。
 - 逐文件用 `git diff --stat v1.0.0-rc.48 v1.0.0-rc.49` 核对,**rc.49 未触及任何本地补丁落点**:`relay/channel/openai/relay_responses.go`、`controller/misc.go`、`setting/console_setting/config.go`、`relay/common/stream_status.go`、`relay/helper/*`、`service/responses_usage.go`、`.gitattributes`、`.github/workflows/*`、`Dockerfile`、`go.mod` 全部无改动;仅七个语言文件被官方改写,本地新增的一行键自动合并。
 - rc.49 官方变更集中在渠道状态(手动禁用不被失败请求清除、多 key 渠道在部分 key 恢复后自动启用)、Redis 用户/令牌缓存跨槽修复(#8218)、SQLite 纯路径配置保留、AWS 移除废弃 `api_key` HTTP 路径、Vertex 服务账号 access token 缓存、模型价格改动审核、OAuth 邀请人持久化(#8247)、DeepSeek Responses 工具历史 reasoning(#8162)与插件路由、前端价格/渠道亲和性界面。这些均在本地补丁落点之外,保留官方实现。
@@ -67,6 +67,8 @@
 3. **数据库 job**:临时 MySQL 8.0 / PostgreSQL 15 service 与真实 SQLite;接通 `TEST_*_DSN` 和 `AUDIT_*_DSN`,不同包使用不同空库并串行运行。用 Go JSON 测试事件断言三库新建/升级子测试实际 PASS,不能靠被 SKIP 的普通 CI 绿灯认定兼容。实际 `SELECT version()` / `sqlite_version()` 写入运行摘要。2026-11-08 首轮实测版本为 **SQLite 3.50.4 / MySQL 8.0.46 / PostgreSQL 15.19**,三库新建/历史升级及固定 rc.39 样本双启动验证均通过。
 4. **rc.39 实际升级样本**:云端检出并编译固定旧补丁提交 `4de90e19f...`;由旧二进制真实创建三种数据库 schema,放入代表性 user/token/channel/历史日志与已关闭的概览开关;目标二进制在同一批数据库启动两次,验证数据、令牌默认权限、用户名唯一性和开关持久化。MySQL/PostgreSQL 同时覆盖独立日志库,不连接任何部署数据库。
 5. **发布门禁**:上述三个 job 全成功后才构建 linux/amd64 候选镜像;先容器冒烟断言 `/api/status` success、默认开关 true、版本精确一致,再登录 GHCR 推送双 tag。**冒烟失败不会发布版本 tag**。保留 `gha scope=newapi-image,mode=max` 层缓存,不改官方 Dockerfile/PGO/镜像工具链。容器刚启动时 Docker 端口代理可能先返回 connection reset;readiness 使用有界 `curl --retry-all-errors`(单次最多5秒、总窗口90秒),任何超时或断言失败仍输出容器日志并阻止发布,不把启动瞬态误当作应用故障。
+
+**2026-11-08 rc.49 运行结果**:代码提交 `79e6d3dd5` 的 Actions 运行 [`42472642000`](https://github.com/lisrain/new-api/actions/runs/42472642000) **首轮四个 job 全部 `success`**——后端(vet/build/test + 流 race 回归)、真实三库与 rc.39 双启动升级、前端(类型/lint/格式/Vitest/生产构建)、候选镜像构建+冒烟+GHCR 发布。实测仍为 SQLite 3.50.4 / MySQL 8.0.46 / `postgres:15` 服务镜像,三库新建、历史升级和 rc39 样本双启动均通过,无需额外修码。此后仅文档提交会触发同分支后续运行,最终版本 tag 与镜像 digest 以分支最新提交的 Actions 记录为准。
 
 镜像命名:`ghcr.io/lisrain/new-api:v1.0.0-rc.49-1` 及 `v1.0.0-rc.49-1-<9位提交>`。运行结果、精确数据库版本和镜像 digest 以 [fork Actions](https://github.com/lisrain/new-api/actions/workflows/ghcr-build.yml) 的对应提交记录为准;本文件不以本地执行结果代替云端验证。
 
