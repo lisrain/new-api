@@ -59,7 +59,7 @@
 ## 🧩 本仓库说明
 
 > [!NOTE]
-> 这是 **New API** 的个人分支,维护在 `lisrain/*` 分支上,基线为上游 tag **v1.0.0-rc.48**。每次向该分支推送都会触发 GitHub Actions:后端、前端及数据库迁移校验 → 构建候选镜像并冒烟 → 推送至 GitHub Container Registry。
+> 这是 **New API** 的个人分支,维护在 `lisrain/*` 分支上,基线为上游 tag **v1.0.0-rc.49**。每次向该分支推送都会触发 GitHub Actions:后端、前端及数据库迁移校验 → 构建候选镜像并冒烟 → 推送至 GitHub Container Registry。
 
 | 项目 | 说明 |
 |------|------|
@@ -69,7 +69,7 @@
 | 📖 详情 | [`LOCAL_PATCHES.md`](./LOCAL_PATCHES.md) — 每个补丁的上游状态、退役条件与升级注意事项 |
 
 ```bash
-docker pull ghcr.io/lisrain/new-api:v1.0.0-rc.48-1
+docker pull ghcr.io/lisrain/new-api:v1.0.0-rc.49-1
 ```
 
 ## 📝 项目说明

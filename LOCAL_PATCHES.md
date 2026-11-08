@@ -1,14 +1,18 @@
 # LOCAL_PATCHES — 本地补丁与维护记录
 
-> 当前维护基线:上游已发布 tag **v1.0.0-rc.48**(`706144769e5bed5a47b78721e3bb11da3cf4c0b9`)。
-> 当前分支 **`lisrain/rc48-patched`**,版本 **`v1.0.0-rc.48-1`**。下方“当前记录”优先于末尾保留的 rc.39 历史快照。
+> 当前维护基线:上游已发布 tag **v1.0.0-rc.49**(`48a6c87f9e7757fdc58e5be9bcb4f8281ad0dfd0`)。
+> 当前分支 **`lisrain/rc49-patched`**,版本 **`v1.0.0-rc.49-1`**。下方“当前记录”优先于末尾保留的 rc.39 历史快照。
 
-## 当前记录 — 2026-11-08 跟进 rc.48
+## 当前记录 — 2026-11-08 二次跟进 rc.49
 
 ### 版本选择与执行边界
 
-- 用 `gh release view --repo QuantumNous/new-api` 核实最新发布为 **v1.0.0-rc.48**,发布时间 `2026-11-04T15:40:15Z`;GitHub 标记 `isDraft=false`、`isPrerelease=false`。名称虽含 rc,本次按官方已发布 release 选择,不是跟随 main 的未发布代码。
-- rc.39 → rc.48 共 **236 个提交**。此次查询时 `origin/main` 在 rc.48 后另有 13 个提交,**没有合入这些未发布提交**。
+- 用 `gh release list --repo QuantumNous/new-api` 核实最新发布为 **v1.0.0-rc.49**,发布时间 `2026-11-08T05:06:38Z`;GitHub 标记 `isDraft=false`、`isPrerelease=false`。名称虽含 rc,本次按官方已发布 release 选择,不是跟随 main 的未发布代码。
+- 上一轮 **rc.48 已完成闭环**:`lisrain/rc48-patched` 的 `028c6cb09` 在 Actions 运行 `42445475009` 中四个 job 全部成功(后端含 race、真实三库与 rc39 升级、前端类型/lint/测试/构建、候选镜像构建+冒烟+GHCR 发布),镜像 `ghcr.io/lisrain/new-api:v1.0.0-rc.48-1` 及其九位 SHA 追踪 tag 已推送。该分支保留,备份 tag **`backup/lisrain-rc48-patched`** 指向 `028c6cb09`。
+- rc.48 → rc.49 共 **15 个提交**。此次查询时 `origin/main` 在 rc.49 后另有 1 个提交(`8faf1d45e` 登录页法律条款翻译),**没有合入这些未发布提交**。
+- 逐文件用 `git diff --stat v1.0.0-rc.48 v1.0.0-rc.49` 核对,**rc.49 未触及任何本地补丁落点**:`relay/channel/openai/relay_responses.go`、`controller/misc.go`、`setting/console_setting/config.go`、`relay/common/stream_status.go`、`relay/helper/*`、`service/responses_usage.go`、`.gitattributes`、`.github/workflows/*`、`Dockerfile`、`go.mod` 全部无改动;仅七个语言文件被官方改写,本地新增的一行键自动合并。
+- rc.49 官方变更集中在渠道状态(手动禁用不被失败请求清除、多 key 渠道在部分 key 恢复后自动启用)、Redis 用户/令牌缓存跨槽修复(#8218)、SQLite 纯路径配置保留、AWS 移除废弃 `api_key` HTTP 路径、Vertex 服务账号 access token 缓存、模型价格改动审核、OAuth 邀请人持久化(#8247)、DeepSeek Responses 工具历史 reasoning(#8162)与插件路由、前端价格/渠道亲和性界面。这些均在本地补丁落点之外,保留官方实现。
+- 部署侧 `docker-compose.yml` 仍固定 `v1.0.0-rc.39-1`,因此云端升级样本的“上一版本”ref 仍为 `4de90e19f94da7dfae0940d8d35e0d3743834ad0`(rc.39 补丁版),**未提前指向 rc.48/rc.49**;待实际部署更新后再同步。
 - 本地仅获取 Git 对象、审阅差异、迁移补丁、格式化和整理提交;**不执行本地 go test/go build、前端测试/构建或 docker build**。所有运行时验证统一由 GitHub Actions 完成。
 - 本仓库 Git 远程按用户要求统一使用 **SSH**: `origin = git@github.com:QuantumNous/new-api.git`(仅 fetch)、`fork = git@github.com:lisrain/new-api.git`(维护分支 push);fetch/push 地址均已核实,SSH 认证账号为 `lisrain`。仅修改本仓库配置,不添加全局 URL 重写。`gh` 查询 release/PR/Actions 仍使用 GitHub 的正常 API。
 - 旧分支 `lisrain/rc39-patched` 保留;备份 tag **`backup/lisrain-rc39-patched`** 指向 `4de90e19f94da7dfae0940d8d35e0d3743834ad0`。本次不删除历史分支,不修改运行中容器或上级 `docker-compose.yml`。
@@ -22,11 +26,11 @@
 | #6808 正常流覆盖 client_gone | CLOSED、未直接 merge;维护者明确由 **#7956** 整合替代 | 不回放旧 `mutex + reasonSet` 及 Done/EOF 的广义覆盖;沿用官方更窄的 join 后纠正 |
 | #6904 Responses 终态 Done | CLOSED、未直接 merge;整合至 **#7956** | 退役旧本地提交,保留官方“Observe → 成功写出终态 → Done” |
 | #6951 同源终态修复 | CLOSED、未直接 merge;整合至 **#7956** | 无需另合 |
-| **#7956** 综合流生命周期修复 | **MERGED**,`2026-10-22T05:06:59Z`,commit `0c2af9780e45f6f9073528fb0fcbdcd64b5d9495`;rc.46 不含、**rc.47/rc.48 已含** | 官方代码完整保留 |
-| **#7088** output_item.added 缺失集合 | **OPEN**,head `ff3418a1e43efe7d53737d6def0e7e230b2bef80`;rc.48 原生 HTTP SSE 仍未补数组 | **保留并迁移**,新提交 `5b8b49204` |
+| **#7956** 综合流生命周期修复 | **MERGED**,`2026-10-22T05:06:59Z`,commit `0c2af9780e45f6f9073528fb0fcbdcd64b5d9495`;rc.46 不含、**rc.47 起各版(含 rc.49)已含** | 官方代码完整保留 |
+| **#7088** output_item.added 缺失集合 | **OPEN**,head `ff3418a1e43efe7d53737d6def0e7e230b2bef80`;rc.49 未改动该文件,原生 HTTP SSE 仍未补数组 | **保留并迁移**,新提交 `fa0fa5ad1` |
 | fix6649 500ms grace + 快速路径 | 官方现改为立即关闭已取消请求的上游,并仅纠正成功送达完成事件的取消竞争 | **退役**,不恢复断开后的尾部继续生成窗口 |
-| 借自 #7178 的通用 nil 写守卫 | #7178 仍 OPEN;rc.48 的终态判据依赖真正的下行写入/flush 成功 | **退役**,不把“丢弃未写出的帧”伪装为成功;不合入 60s drain |
-| #7419 终态诊断 | OPEN,head `15997510897394c96e9a75ca8b3d86d406a84a79`;未被 rc.48 合入 | 继续观察,不扩大此次变更为错误来源/日志体系重构 |
+| 借自 #7178 的通用 nil 写守卫 | #7178 仍 OPEN;rc.49 的终态判据依赖真正的下行写入/flush 成功 | **退役**,不把“丢弃未写出的帧”伪装为成功;不合入 60s drain |
+| #7419 终态诊断 | OPEN,head `15997510897394c96e9a75ca8b3d86d406a84a79`;未被 rc.49 合入 | 继续观察,不扩大此次变更为错误来源/日志体系重构 |
 | #6960 分组限流隔离 | OPEN | 单用户部署未启用该分组限流场景,不新增合入 |
 | #6927 异常流错误日志 | OPEN | 继续观察,不新增合入 |
 | #7066 流失败终态事件 | OPEN、CONFLICTING;当前 diff 仍对 Responses 发送 chat 形状错误块,且 Chat 失败分支早于 usage 估算返回 | 不合入 |
@@ -44,13 +48,13 @@
 
 | 当前提交 | 来源 | 落点及升级要求 |
 |---|---|---|
-| `f7083c5ab` | rc.39 `2a46b57a1` | 概览设置引导全局开关;保留后端配置/status、设置 UI、STATUS_RELATED_KEYS、七种翻译及概览四个守卫 |
-| `f53aa58e7` | rc.39 `41d23ee9f` | 概览开关沿用 `handleServerError`,不恢复固定错误 Toast |
-| `d45b29420` | rc.39 `8b7d7317b` | `.gitattributes` 保留 `Dockerfile* text eol=lf` / `VERSION text eol=lf` |
-| `1a6872b91` + `09e87c83e` | rc.39 `e0d95433e` + `7d840ed76` | fork 工作流仓库守卫和 GHCR 工作流;定长 `${GITHUB_SHA:0:9}`、不监听 tag、不推 latest |
-| `79fe01830` | rc.39 `af343ad83` | README 本仓库说明,位于官方顶部 `</div>` + `---` 之后;版本和补丁说明已另行更新 |
-| **`5b8b49204`** | #7088 / rc.39 `b02f61252` | `relay/channel/openai/relay_responses.go` 使用现有 `ojson.SetRawBytes` 补缺失 `item.summary` / `item.content`;不重引 gjson/sjson,不覆盖存在字段或显式 null |
-| `4964853fb` | 本次新增回归 | 复用概览既有测试文件,覆盖全局关闭时的完成/未完成/展开/折叠状态、用量区域不受影响、恢复个人展开偏好 |
+| `78f1681b1` | rc.39 `2a46b57a1` | 概览设置引导全局开关;保留后端配置/status、设置 UI、STATUS_RELATED_KEYS、七种翻译及概览四个守卫 |
+| `766962622` | rc.39 `41d23ee9f` | 概览开关沿用 `handleServerError`,不恢复固定错误 Toast |
+| `bb04f8021` | rc.39 `8b7d7317b` | `.gitattributes` 保留 `Dockerfile* text eol=lf` / `VERSION text eol=lf` |
+| `f3369a6d4` + `596c9d999` | rc.39 `e0d95433e` + `7d840ed76` | fork 工作流仓库守卫和 GHCR 工作流;定长 `${GITHUB_SHA:0:9}`、不监听 tag、不推 latest |
+| `375baa359` | rc.39 `af343ad83` | README 本仓库说明,位于官方顶部 `</div>` + `---` 之后;版本和补丁说明已另行更新 |
+| **`fa0fa5ad1`** | #7088 / rc.39 `b02f61252` | `relay/channel/openai/relay_responses.go` 使用现有 `ojson.SetRawBytes` 补缺失 `item.summary` / `item.content`;不重引 gjson/sjson,不覆盖存在字段或显式 null |
+| `d77f5df60` | rc.48 起新增回归 | 复用概览既有测试文件,覆盖全局关闭时的完成/未完成/展开/折叠状态、用量区域不受影响、恢复个人展开偏好 |
 
 #7088 仅覆盖原生 **HTTP SSE**。复用 `relay_responses_billing_test.go` 新增表测,覆盖缺失/空/非空/null 集合、其他 item、非 added 事件、原始大整数与扩展字段、终态帧及 7+5=12 usage 不变。它观察原始计量事实后规范化下行 JSON,不修改官方终态判据或计费累加器。WebSocket 的 item 规范化和终态发送时序不在本次本地扩展范围。
 
@@ -58,26 +62,26 @@
 
 工作流: [ghcr-build.yml](.github/workflows/ghcr-build.yml),触发 `push lisrain/**` 或手动运行。
 
-1. **后端 job**:Go 版本取自 rc.48 `go.mod`(1.26.10);根模块、`relaykit`、新增的 `tokenkit` 分别 `go vet ./...` / `go build ./...`;`make test` 全模块测试;Responses 完成/兼容及 scanner/status 的定向 `-race -parallel=1` 回归。
-2. **前端 job**:与官方同步 Bun **1.4.4**;冻结 lock 安装,`bun check -b`、本地补丁 JS/TS 文件强制 lint、补丁 JS/TS/JSON 格式检查、Vitest 全量测试及生产构建;手动版本覆盖与最终镜像版本一致。lint/格式检查通过 `git diff` 与对应官方 tag 比较选取文件,不关闭任何规则。既有版权头保护格式脚本仅增加可选文件参数,无参数时仍处理全目录;格式错误只在云端生成差异供修正,不会自动修改仓库远程。首次全量 lint 报出的错误均位于 rc.48 官方未修改文件;本次不额外引入无关的上游风格清理,类型/测试/生产构建仍保持全量。
+1. **后端 job**:Go 版本取自 rc.49 `go.mod`(1.26.10);根模块、`relaykit`、`tokenkit` 分别 `go vet ./...` / `go build ./...`;`make test` 全模块测试;Responses 完成/兼容及 scanner/status 的定向 `-race -parallel=1` 回归。
+2. **前端 job**:与官方 rc.49 `ci.yml` 同步 Bun **1.4.4**;冻结 lock 安装,`bun check -b`、本地补丁 JS/TS 文件强制 lint、补丁 JS/TS/JSON 格式检查、Vitest 全量测试及生产构建;手动版本覆盖与最终镜像版本一致。lint/格式检查通过 `git diff` 与对应官方 tag 比较选取文件,不关闭任何规则。既有版权头保护格式脚本仅增加可选文件参数,无参数时仍处理全目录;格式错误只在云端生成差异供修正,不会自动修改仓库远程。首次全量 lint 报出的错误均位于 rc.48 官方未修改文件(rc.49 未改动这些文件);本次不额外引入无关的上游风格清理,类型/测试/生产构建仍保持全量。
 3. **数据库 job**:临时 MySQL 8.0 / PostgreSQL 15 service 与真实 SQLite;接通 `TEST_*_DSN` 和 `AUDIT_*_DSN`,不同包使用不同空库并串行运行。用 Go JSON 测试事件断言三库新建/升级子测试实际 PASS,不能靠被 SKIP 的普通 CI 绿灯认定兼容。实际 `SELECT version()` / `sqlite_version()` 写入运行摘要。2026-11-08 首轮实测版本为 **SQLite 3.50.4 / MySQL 8.0.46 / PostgreSQL 15.19**,三库新建/历史升级及固定 rc.39 样本双启动验证均通过。
 4. **rc.39 实际升级样本**:云端检出并编译固定旧补丁提交 `4de90e19f...`;由旧二进制真实创建三种数据库 schema,放入代表性 user/token/channel/历史日志与已关闭的概览开关;目标二进制在同一批数据库启动两次,验证数据、令牌默认权限、用户名唯一性和开关持久化。MySQL/PostgreSQL 同时覆盖独立日志库,不连接任何部署数据库。
 5. **发布门禁**:上述三个 job 全成功后才构建 linux/amd64 候选镜像;先容器冒烟断言 `/api/status` success、默认开关 true、版本精确一致,再登录 GHCR 推送双 tag。**冒烟失败不会发布版本 tag**。保留 `gha scope=newapi-image,mode=max` 层缓存,不改官方 Dockerfile/PGO/镜像工具链。容器刚启动时 Docker 端口代理可能先返回 connection reset;readiness 使用有界 `curl --retry-all-errors`(单次最多5秒、总窗口90秒),任何超时或断言失败仍输出容器日志并阻止发布,不把启动瞬态误当作应用故障。
 
-镜像命名:`ghcr.io/lisrain/new-api:v1.0.0-rc.48-1` 及 `v1.0.0-rc.48-1-<9位提交>`。运行结果、精确数据库版本和镜像 digest 以 [fork Actions](https://github.com/lisrain/new-api/actions/workflows/ghcr-build.yml) 的对应提交记录为准;本文件不以本地执行结果代替云端验证。
+镜像命名:`ghcr.io/lisrain/new-api:v1.0.0-rc.49-1` 及 `v1.0.0-rc.49-1-<9位提交>`。运行结果、精确数据库版本和镜像 digest 以 [fork Actions](https://github.com/lisrain/new-api/actions/workflows/ghcr-build.yml) 的对应提交记录为准;本文件不以本地执行结果代替云端验证。
 
 ### 下一次升级流程
 
 1. `git fetch origin --tags`,用 `gh release view` 选择官方最新已发布 tag,不要默认采用 main。
-2. 建 `lisrain/rcNN-patched` 新分支;首先重新核对 **#7088 是否已合入或有等价 raw item 规范化**。已吸收时退役 `5b8b49204`,不要重复回放。
-3. 重放概览开关、错误处理、LF、fork 守卫、九位 SHA 和 README 说明;保留本次扩充的云端验证配置和格式脚本可选文件参数。新版本若继续使用 tokenkit,必须保留其独立验证。数据库升级样本的 `.previous` 检出 ref 应同步为当时已部署的旧补丁提交,不能永久固定在 rc.39。
+2. 建 `lisrain/rcNN-patched` 新分支;首先重新核对 **#7088 是否已合入或有等价 raw item 规范化**。已吸收时退役 `fa0fa5ad1`,不要重复回放。可直接 `git cherry-pick` 上一分支 `v1.0.0-rc.<上一版>..<上一分支 HEAD>` 区间,本次 rc.48→rc.49 的 13 个本地提交全部无冲突落地。
+3. 重放概览开关、错误处理、LF、fork 守卫、九位 SHA 和 README 说明;保留本次扩充的云端验证配置和格式脚本可选文件参数。新版本若继续使用 tokenkit,必须保留其独立验证。数据库升级样本的 `.previous` 检出 ref 应同步为当时已部署的旧补丁提交,不能永久固定在 rc.39;当前 `docker-compose.yml` 仍为 `v1.0.0-rc.39-1`,故仍指向 `4de90e19f`。
 4. **不再从 rc.39 回放 #6808/#6904、fix6649/grace 或 nil 写守卫**。未来终态/取消改动以官方 #7956 的成功送达契约为依据,不能仅为日志显示正常而改变账单/健康分类。
 5. 更新 VERSION 与当前维护记录,提交、push 后用 `gh run list/view/watch` 跟踪云端;红灯按实际错误修正再提交,不在本机补跑测试。
 6. 云端成功后部署更新仍是独立步骤;升级前备份数据库,多节点同时升级并保持相同 SESSION_SECRET/CRYPTO_SECRET。此次仅生成可部署镜像,不自动替换现有服务。
 
 ### 安全与验证范围说明
 
-rc.48 包含 Redis 用户/令牌/会话缓存签名和新 access token 等官方认证变更;本次保留官方实现,没有自行重写认证流程。审阅参考 OWASP **ASVS 5.0.0**(2025-05-30 stable)、[Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html) 和 [Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)。云端运行已有失败/撤销/迁移/缓存完整性回归;这不等于对整个项目作完整 ASVS 合规认证,也不涵盖真实供应商调用、生产数据全集或未配置的 ClickHouse 集成。
+rc.48 包含 Redis 用户/令牌/会话缓存签名和新 access token 等官方认证变更,rc.49 又修复了用户与令牌缓存的 Redis 跨槽错误(#8218)并补充缓存版本一致性回归;本次均保留官方实现,没有自行重写认证流程。审阅参考 OWASP **ASVS 5.0.0**(2025-05-30 stable)、[Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html) 和 [Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)。云端运行已有失败/撤销/迁移/缓存完整性回归;这不等于对整个项目作完整 ASVS 合规认证,也不涵盖真实供应商调用、生产数据全集或未配置的 ClickHouse 集成。
 
 ---
 
