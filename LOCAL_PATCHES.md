@@ -10,6 +10,7 @@
 - 用 `gh release view --repo QuantumNous/new-api` 核实最新发布为 **v1.0.0-rc.48**,发布时间 `2026-11-04T15:40:15Z`;GitHub 标记 `isDraft=false`、`isPrerelease=false`。名称虽含 rc,本次按官方已发布 release 选择,不是跟随 main 的未发布代码。
 - rc.39 → rc.48 共 **236 个提交**。此次查询时 `origin/main` 在 rc.48 后另有 13 个提交,**没有合入这些未发布提交**。
 - 本地仅获取 Git 对象、审阅差异、迁移补丁、格式化和整理提交;**不执行本地 go test/go build、前端测试/构建或 docker build**。所有运行时验证统一由 GitHub Actions 完成。
+- 本仓库 Git 远程按用户要求统一使用 **SSH**: `origin = git@github.com:QuantumNous/new-api.git`(仅 fetch)、`fork = git@github.com:lisrain/new-api.git`(维护分支 push);fetch/push 地址均已核实,SSH 认证账号为 `lisrain`。仅修改本仓库配置,不添加全局 URL 重写。`gh` 查询 release/PR/Actions 仍使用 GitHub 的正常 API。
 - 旧分支 `lisrain/rc39-patched` 保留;备份 tag **`backup/lisrain-rc39-patched`** 指向 `4de90e19f94da7dfae0940d8d35e0d3743834ad0`。本次不删除历史分支,不修改运行中容器或上级 `docker-compose.yml`。
 
 ### PR 合入核实与补丁存废
