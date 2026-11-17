@@ -121,9 +121,9 @@ jobs:
           DISABLE_ESLINT_PLUGIN=true VITE_REACT_APP_VERSION="$VERSION" bun run build
 
   database:
-    name: Real database matrix and rc39 upgrade
+    name: Real database matrix and rc39/rc49 upgrades
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     env:
       GOWORK: 'off'
       PGPASSWORD: newapi-ci
@@ -179,7 +179,7 @@ jobs:
           set -euo pipefail
           mkdir -p web/dist
           touch web/dist/index.html
-          for name in newapi_model_test newapi_model_log_test newapi_controller_test newapi_controller_log_test; do
+          for name in newapi_model_test newapi_model_log_test newapi_controller_test newapi_controller_log_test newapi_service_test; do
             docker exec "$MYSQL_CONTAINER" mysql -uroot -pnewapi-ci \
               -e "CREATE DATABASE $name CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
             docker exec "$POSTGRES_CONTAINER" psql -U postgres -d newapi_test \
@@ -188,7 +188,7 @@ jobs:
       - name: Model database and migration tests
         run: |
           set -euo pipefail
-          go test ./model -run 'DatabaseMatrix|Migration' -count=1 -timeout=15m -json \
+          go test ./model -run 'DatabaseMatrix|Migration|TaskPluginGatewayIDConverges' -count=1 -timeout=15m -json \
             | tee "$RUNNER_TEMP/model-database.jsonl"
       - name: Controller database and migration tests
         env:
@@ -209,28 +209,65 @@ jobs:
                 'any(.[]; .Action == "pass" and .Test == $test)' \
                 "$RUNNER_TEMP/controller-database.jsonl"
             done
-            jq -s -e --arg test "TestMigrationSchemaStability/$dialect" \
-              'any(.[]; .Action == "pass" and .Test == $test)' \
-              "$RUNNER_TEMP/model-database.jsonl"
+            for name in TestMigrationSchemaStability TestSystemTaskHistoryDatabaseMatrix TestDeleteFinishedSystemTasksDatabaseMatrix TestRequestPolicyDatabaseMatrix TestTaskPluginGatewayIDConvergesUnderConcurrentCreation; do
+              jq -s -e --arg test "$name/$dialect" \
+                'any(.[]; .Action == "pass" and .Test == $test)' \
+                "$RUNNER_TEMP/model-database.jsonl"
+            done
           done
           {
             echo '### Database engine versions (real queries)'
             jq -r 'select(.Output? != null) | .Output | select(contains("database version:"))' \
               "$RUNNER_TEMP/controller-database.jsonl"
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Check out the exact previous patched release
+      - name: Plugin credentials and scheduled updates on real databases
+        env:
+          TEST_MYSQL_SERVICE_DSN: 'root:newapi-ci@tcp(127.0.0.1:3306)/newapi_service_test?charset=utf8mb4&parseTime=true&loc=UTC'
+          TEST_POSTGRES_SERVICE_DSN: 'postgres://postgres@127.0.0.1:5432/newapi_service_test?sslmode=disable'
+        run: |
+          set -euo pipefail
+          for dialect in sqlite mysql postgres; do
+            TEST_TASK_DB_DIALECT="$dialect" go test ./model -run '^TestScheduledChannel' \
+              -count=1 -timeout=5m -json | tee "$RUNNER_TEMP/plugin-model-$dialect.jsonl"
+            TEST_TASK_DB_DIALECT="$dialect" TEST_MYSQL_DSN="$TEST_MYSQL_SERVICE_DSN" TEST_POSTGRES_DSN="$TEST_POSTGRES_SERVICE_DSN" \
+              go test ./service -run '^Test(Refresh|Scheduled|CredentialHooksVerifyTLS)' \
+              -count=1 -timeout=10m -json | tee "$RUNNER_TEMP/plugin-service-$dialect.jsonl"
+            for name in TestScheduledChannelLockedStatus TestScheduledChannelLockedMultiKey TestScheduledChannelLockedCancellation; do
+              jq -s -e --arg test "$name" 'any(.[]; .Action == "pass" and .Test == $test)' \
+                "$RUNNER_TEMP/plugin-model-$dialect.jsonl"
+            done
+            if [ "$dialect" != sqlite ]; then
+              jq -s -e --arg test TestScheduledChannelDatabaseRowLock 'any(.[]; .Action == "pass" and .Test == $test)' \
+                "$RUNNER_TEMP/plugin-model-$dialect.jsonl"
+            fi
+            for name in TestRefreshTwoNodesMakeOnePluginCall TestRefreshRotatedTokenIsNeverSentAgain TestScheduledCredentialBalanceAndNodeSync TestCredentialHooksVerifyTLSEvenWhenTheChannelSkipsIt; do
+              jq -s -e --arg test "$name" 'any(.[]; .Action == "pass" and .Test == $test)' \
+                "$RUNNER_TEMP/plugin-service-$dialect.jsonl"
+            done
+            jq -r 'select(.Output? != null) | .Output | select(contains("database:"))' \
+              "$RUNNER_TEMP/plugin-service-$dialect.jsonl" >> "$GITHUB_STEP_SUMMARY"
+          done
+      - name: Check out the exact deployed patched release
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: 4de90e19f94da7dfae0940d8d35e0d3743834ad0
           path: .previous
-      - name: Build both versions for the upgrade fixture
+      - name: Check out the latest maintained patched release
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: c3dce85ce429b44205270df8426cc0113a6c42be
+          path: .previous-released
+      - name: Build current, deployed and latest maintained upgrade fixtures
         run: |
           set -euo pipefail
           mkdir -p .previous/web/dist
           touch .previous/web/dist/index.html
           CGO_ENABLED=0 go build -o "$RUNNER_TEMP/newapi-current" .
           (cd .previous && CGO_ENABLED=0 go build -o "$RUNNER_TEMP/newapi-previous" .)
-      - name: Upgrade rc39 data on SQLite, MySQL and PostgreSQL twice
+          mkdir -p .previous-released/web/dist
+          touch .previous-released/web/dist/index.html
+          (cd .previous-released && CGO_ENABLED=0 go build -o "$RUNNER_TEMP/newapi-previous-released" .)
+      - name: Upgrade rc39 and rc49 data on SQLite, MySQL and PostgreSQL twice
         env:
           MYSQL_CONTAINER: ${{ job.services.mysql.id }}
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
@@ -240,7 +277,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends sqlite3
           current_version="${INPUT_VERSION:-$(cat VERSION)}"
-          previous_version=$(cat .previous/VERSION)
           server_pid=
           trap 'if [ -n "$server_pid" ]; then kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; fi' EXIT
           sql() {
@@ -272,10 +308,18 @@ jobs:
             wait "$server_pid" || true
             server_pid=
           }
-          for dialect in sqlite mysql postgres; do
-            main_database="newapi_upgrade_$dialect"
+          for baseline in deployed maintained; do
+            previous_path=.previous
+            previous_binary="$RUNNER_TEMP/newapi-previous"
+            if [ "$baseline" = maintained ]; then
+              previous_path=.previous-released
+              previous_binary="$RUNNER_TEMP/newapi-previous-released"
+            fi
+            previous_version=$(cat "$previous_path/VERSION")
+            for dialect in sqlite mysql postgres; do
+            main_database="newapi_upgrade_${baseline}_$dialect"
             log_database="${main_database}_log"
-            sqlite_path="$RUNNER_TEMP/upgrade-$dialect.db"
+            sqlite_path="$RUNNER_TEMP/upgrade-${baseline}-$dialect.db"
             key_column='"key"'
             case "$dialect" in
               sqlite) main_dsn=local; log_dsn= ;;
@@ -293,17 +337,26 @@ jobs:
                 log_dsn="postgres://postgres@127.0.0.1:5432/$log_database?sslmode=disable"
                 ;;
             esac
-            start_server "$RUNNER_TEMP/newapi-previous" "$previous_version" "$RUNNER_TEMP/previous-$dialect.log"
+            start_server "$previous_binary" "$previous_version" "$RUNNER_TEMP/previous-${baseline}-$dialect.log"
             stop_server
             sql main "INSERT INTO options ($key_column,value) VALUES ('console_setting.setup_guide_enabled','false')"
+            sql main "INSERT INTO options ($key_column,value) VALUES ('CheckSensitiveEnabled','true'),('CheckSensitiveOnPromptEnabled','true'),('SensitiveWords','ci-upgrade-blocked-word')"
             sql main "INSERT INTO users (id,username,password,aff_code,quota,used_quota) VALUES (101,'upgrade-user','fixture-not-a-real-hash','upgrade-aff',1234567,234)"
             sql main "INSERT INTO tokens (id,user_id,$key_column,name,remain_quota) VALUES (101,101,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','upgrade-token',654321)"
             sql main "INSERT INTO channels (id,type,$key_column,name,models,priority,channel_info) VALUES (101,1,'fixture-not-a-real-api-key','upgrade-channel','gpt-test',9,'{}')"
             sql log "INSERT INTO logs (id,user_id,type,content,quota,request_id) VALUES (101,101,2,'upgrade-history',123,'rc39-upgrade-history')"
             for pass in 1 2; do
-              start_server "$RUNNER_TEMP/newapi-current" "$current_version" "$RUNNER_TEMP/current-$dialect-$pass.log"
+              start_server "$RUNNER_TEMP/newapi-current" "$current_version" "$RUNNER_TEMP/current-${baseline}-$dialect-$pass.log"
               jq -e '.data.setup_guide_enabled == false' "$RUNNER_TEMP/upgrade-status.json"
               stop_server
+              [ "$(sql main "SELECT COUNT(*) FROM options WHERE $key_column IN ('CheckSensitiveEnabled','CheckSensitiveOnPromptEnabled','SensitiveWords')")" = 0 ]
+              instances=$(sql main "SELECT value FROM options WHERE $key_column='request_plugin_setting.instances'")
+              jq -e 'length == 1 and .[0].plugin == "request-filter" and .[0].enabled == true and .[0].global == true and .[0].config.keywords == "ci-upgrade-blocked-word"' <<< "$instances"
+              if [ "$pass" = 1 ]; then
+                first_instances="$instances"
+              else
+                [ "$instances" = "$first_instances" ]
+              fi
               [ "$(sql main "SELECT COUNT(*) FROM users WHERE id=101 AND username='upgrade-user' AND quota=1234567 AND used_quota=234")" = 1 ]
               [ "$(sql main "SELECT COUNT(*) FROM tokens WHERE id=101 AND name='upgrade-token' AND remain_quota=654321 AND $key_column='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' AND COALESCE(allow_user_quota_query,false)=false")" = 1 ]
               [ "$(sql main "SELECT COUNT(*) FROM channels WHERE id=101 AND name='upgrade-channel' AND models='gpt-test' AND priority=9")" = 1 ]
@@ -312,7 +365,8 @@ jobs:
                 echo '::error::User uniqueness was lost during upgrade'
                 exit 1
               fi
-              echo "$dialect: rc39 data, disabled setup guide and uniqueness preserved (startup $pass)" >> "$GITHUB_STEP_SUMMARY"
+              echo "$dialect: $previous_version data, disabled setup guide, sensitive-word migration and uniqueness preserved (startup $pass)" >> "$GITHUB_STEP_SUMMARY"
+            done
             done
           done
 

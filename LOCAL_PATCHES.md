@@ -1,9 +1,62 @@
 # LOCAL_PATCHES — 本地补丁与维护记录
 
-> 当前维护基线:上游已发布 tag **v1.0.0-rc.49**(`48a6c87f9e7757fdc58e5be9bcb4f8281ad0dfd0`)。
-> 当前分支 **`lisrain/rc49-patched`**,版本 **`v1.0.0-rc.49-1`**。下方“当前记录”优先于末尾保留的 rc.39 历史快照。
+> 当前维护基线:上游已发布 tag **v1.0.0-rc.51**(`c9c6da2786b6a0912215127e78e28fbc6650c85f`)。
+> 当前分支 **`lisrain/rc51-patched`**,版本 **`v1.0.0-rc.51-1`**。本节优先于下方保留的 rc.49 / rc.39 历史记录。
 
-## 当前记录 — 2026-11-08 二次跟进 rc.49
+## 当前记录 — 2026-11-17 跟进 rc.51
+
+### 版本选择与执行边界
+
+- 用 `gh api repos/QuantumNous/new-api/releases --paginate` 排除 draft / prerelease,再查询固定 release:最新非预发行版为 **v1.0.0-rc.51**,发布时间 **2026-11-13T09:30:24Z**,`draft=false`、`prerelease=false`。名称虽含 rc,按 GitHub 发布标志选择;不采用 main 未发布代码。
+- rc.49 → rc.51 共 **15 个提交**;fetch 后 `origin/main` 还领先 rc.51 **12 个提交**,此次不合入。上游新增 provider/request 插件与社区市场、敏感词迁移、HOST 监听配置、易支付 RSA、DeepSeek developer role 兼容、前端依赖和密码反馈升级;rc.51 修复 moego 在无 AVX x86-64 CPU 上的 SIGILL。
+- 旧维护分支 `lisrain/rc49-patched` 保留,备份 tag **`backup/lisrain-rc49-patched`** 固定到 `c3dce85ce429b44205270df8426cc0113a6c42be`。rc39 / rc48 分支与备份不删除。
+- 本次从官方 rc.51 新建 `lisrain/rc51-patched`,rc.49 分支的 **15 个本地提交全部无冲突迁移**;随后单独更新版本、当前记录和云端门禁。未恢复 rc39 已退役的流补丁。
+- 本仓库 fetch/push 远程仍为 SSH:`origin = git@github.com:QuantumNous/new-api.git`(只 fetch)、`fork = git@github.com:lisrain/new-api.git`(维护分支 push)。未改全局 Git 配置。
+- 重新检查上级 `docker-compose.yml`:仍使用 **v1.0.0-rc.39-1**。此次不修改 compose、运行中容器或生产数据库;测试、编译、镜像构建与冒烟全部交给 GitHub Actions,本地仅查询、迁移、审阅和提交。
+
+### 补丁存废与落点核对
+
+`gh pr view --json state,mergedAt,mergeCommit,headRefOid,updatedAt` 重新核对文档列出的 17 个 PR,再检查固定 rc.51 源码。OPEN / CLOSED 不代替实际代码判断。
+
+| 补丁 / PR | 2026-11-17 核对结论 | rc.51 处理 |
+|---|---|---|
+| **#7088** 缺失 item 集合 | 仍 OPEN,head `ff3418a1e43efe7d53737d6def0e7e230b2bef80`;官方 `relay_responses.go` 与 rc49 相同,没有等价 raw item 规范化 | 保留为 **`f43669f6f`**,继续使用 `ojson.SetRawBytes`,已有字段/显式 null/大整数/扩展字段不变,仅原生 HTTP SSE |
+| **#7956** 成功送达终态契约 | MERGED,commit `0c2af9780e45f6f9073528fb0fcbdcd64b5d9495` 是 rc.51 祖先;官方 Responses 仍是 Observe → 写入/flush 成功 → Done | 保留官方实现;#6808 / #6904 / #6951 仍 CLOSED、未直接 merge,不重复回放 |
+| fix6649 grace / #7178 nil 写守卫 | 官方取消仍立即关闭上游;rc51 对 keepalive writer 的改动是支持请求插件包装链,不是恢复 drain | 继续退役;#7178 仍 OPEN,不引入 60s drain 或把丢帧视为成功 |
+| 概览设置引导开关 | 上游未触及 config/status/content/dashboard 落点;types.ts 新增支付/维护键、移除旧敏感词键,与本地 ContentSettings 无关 | **`caeb5ea38` + `06c51ceb3`**,保留四处可见性守卫、状态刷新、七种翻译与统一错误处理 |
+| 概览回归测试 | 与上游 dashboard 无交叉改动 | **`88e5e81ad` + `b85381e10`**,全局关闭/恢复个人偏好/用量区域均继续覆盖 |
+| LF / fork 工作流 | 上游 release/electron 改为 MoeForge moejs PGO 路径;Dockerfile 同步该路径 | **`6b37dc2a0` / `499ab948a` / `b2d719002`**,只添加原有守卫和 LF,完整保留新版 PGO/许可附件;不监听 tag、不推 latest、SHA 固定九位 |
+| #7419 / #6927 | 仍 OPEN,无新 head 或更新时间 | 不新增诊断/日志体系重构 |
+| #7066 / #7033 | 仍 OPEN,head/更新时间与 rc49 记录一致 | 不扩大为 chat 首帧或失败终态改动 |
+| #6960 / #6913 / #6979 | 仍 OPEN;本地未启用对应分组限流/订阅场景 | 不新增合入 |
+| #7092 / #7195 | 仍 CLOSED、未合并 | 不合入;沿用官方 #7427 / #5062(均 MERGED 且已在基线) |
+
+本地开关沿用既有 `SettingsSwitchField` / `SettingsSection` / `useUpdateOption` 与 dashboard 组件,没有新增替代 UI、依赖或通用封装。`git diff` 已确认所有非文档补丁完整落地,官方 `stream_status.go` / `stream_scanner.go` / `helper/common.go` / `service/responses_usage.go` 均无额外本地修改。
+
+### 云端验证与发布门禁
+
+工作流仍为 [.github/workflows/ghcr-build.yml](.github/workflows/ghcr-build.yml),push `lisrain/**` 触发。Go **1.26.10**、Bun **1.4.4** 与官方 rc.51 CI 对齐;根模块、relaykit、tokenkit 独立 vet/build/test,流生命周期与 #7088 定向 race,前端全量 typecheck/Vitest/生产构建和本地差异 lint/格式检查继续保留。
+
+rc.51 数据库/插件改动较多,本次扩充 database job,不让未配置 DSN 的 SKIP 冒充三库通过:
+
+1. 真实 SQLite / MySQL 8.0 / PostgreSQL 15 新建与升级矩阵,JSON 事件必须确认各 dialect 子测试 PASS;新增强制检查 system task 历史/清理、request policy 与 gateway ID 并发创建矩阵。
+2. 对每个 dialect 显式设置 `TEST_TASK_DB_DIALECT`,运行官方 provider credential 刷新/轮换/TLS、scheduled 更新/取消/跨节点回归;MySQL/PostgreSQL 额外强制 row-lock 用例 PASS。service 使用独立临时库,各包串行运行。
+3. **实际已部署 rc39** 检出 `.previous = 4de90e19f94da7dfae0940d8d35e0d3743834ad0`,不因此次跟进擅自改变部署基线。
+4. **最新维护 rc49** 另外检出 `.previous-released = c3dce85ce429b44205270df8426cc0113a6c42be`,同时验证 rc39 → rc51 和 rc49 → rc51。旧二进制真实建库,写入代表性用户/令牌/渠道/独立历史日志及关闭的设置引导;目标二进制每库启动两次,核对数据、默认令牌权限和用户名唯一性。
+5. 两种旧基线都新增敏感词旧 options 样本;升级后必须迁移为唯一、启用、全局的 `request-filter` 实例,删除旧键,二次启动保存同一实例 JSON(不重复迁移)。不用生产数据或真实供应商凭据。
+6. 三个验证 job 全成功后才构建 linux/amd64 候选镜像,先验证 `/api/status`、默认设置引导与精确 VERSION,再推 GHCR 双 tag。仍保留有界 readiness 与 `gha scope=newapi-image,mode=max` 缓存,不改官方 Dockerfile。
+
+**本次云端状态:待 push 后记录实际 Actions 运行结果。尚未声称测试、数据库兼容或镜像发布已完成。** 镜像目标为 `ghcr.io/lisrain/new-api:v1.0.0-rc.51-1` 与 `v1.0.0-rc.51-1-<9位提交>`;精确数据库版本与 digest 以此次运行日志为准。
+
+### 安全与下次升级
+
+- 本次保留上游认证/密码提示与插件凭据实现,没有自行重写认证规则。核对 OWASP **ASVS 5.0.0**(2025-05-30 stable)、[Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)、[Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)。上游密码政策仍为 8–128 字符、强度提示不拦截提交,不能据此宣称满足无 MFA 时至少 15 字符等 OWASP 要求;此次不扩展为全项目 ASVS 认证。
+- 云端绿灯才生成可部署镜像;实际部署是独立步骤,须先备份数据库,保持多节点 SESSION_SECRET/CRYPTO_SECRET 一致。未覆盖真实供应商、生产全集或 ClickHouse。
+- 下一次仍选择官方最新已发布、非 prerelease tag;先检查 #7088 是否有等价实现,再迁移 rc51 本地提交,不恢复 rc39 退役补丁。已部署样本随实际 compose 更新,最新维护样本随上次成功发布版本更新;保留三模块、三库、插件 credential 与双启动门禁。
+
+---
+
+## 历史记录 — 2026-11-08 二次跟进 rc.49
 
 ### 版本选择与执行边界
 
