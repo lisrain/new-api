@@ -9,7 +9,8 @@
 
 - 用 `gh api repos/QuantumNous/new-api/releases --paginate` 排除 draft / prerelease,再查询固定 release:最新非预发行版为 **v1.0.0-rc.51**,发布时间 **2026-11-13T09:30:24Z**,`draft=false`、`prerelease=false`。名称虽含 rc,按 GitHub 发布标志选择;不采用 main 未发布代码。
 - rc.49 → rc.51 共 **15 个提交**;fetch 后 `origin/main` 还领先 rc.51 **12 个提交**,此次不合入。上游新增 provider/request 插件与社区市场、敏感词迁移、HOST 监听配置、易支付 RSA、DeepSeek developer role 兼容、前端依赖和密码反馈升级;rc.51 修复 moego 在无 AVX x86-64 CPU 上的 SIGILL。
-- 旧维护分支 `lisrain/rc49-patched` 保留,备份 tag **`backup/lisrain-rc49-patched`** 固定到 `c3dce85ce429b44205270df8426cc0113a6c42be`。rc39 / rc48 分支与备份不删除。
+- **2026-11-17 清理后策略:**按用户要求,不再创建或维护 `backup/*` 标签;本地与 fork 已删除 rc39 / rc48 / rc49 旧维护分支及 8 个历史 backup 标签,本地另删除 `pr-7088` / `pr-7178` 临时分支。只保留当前 `lisrain/rc51-patched` 维护分支,fork 默认 `main`、官方发布/模块标签、GHCR 镜像与 Actions 历史不动。下方历史记录中的“保留分支/备份 tag”仅说明当时状态,不是现行流程。
+- 云端升级样本仍引用 rc39 / rc49 的固定 commit SHA,不依赖已删除的分支或 backup 标签;清理后用 GitHub API 再核实两个 SHA 可访问。此次不执行对象强制 GC,不修改升级测试 ref 或部署配置。
 - 本次从官方 rc.51 新建 `lisrain/rc51-patched`,rc.49 分支的 **15 个本地提交全部无冲突迁移**;随后单独更新版本、当前记录和云端门禁。未恢复 rc39 已退役的流补丁。
 - 本仓库 fetch/push 远程仍为 SSH:`origin = git@github.com:QuantumNous/new-api.git`(只 fetch)、`fork = git@github.com:lisrain/new-api.git`(维护分支 push)。未改全局 Git 配置。
 - 重新检查上级 `docker-compose.yml`:仍使用 **v1.0.0-rc.39-1**。此次不修改 compose、运行中容器或生产数据库;测试、编译、镜像构建与冒烟全部交给 GitHub Actions,本地仅查询、迁移、审阅和提交。
