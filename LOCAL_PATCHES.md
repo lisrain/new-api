@@ -46,7 +46,11 @@ rc.51 数据库/插件改动较多,本次扩充 database job,不让未配置 DSN
 5. 两种旧基线都新增敏感词旧 options 样本;升级后必须迁移为唯一、启用、全局的 `request-filter` 实例,删除旧键,二次启动保存同一实例 JSON(不重复迁移)。不用生产数据或真实供应商凭据。
 6. 三个验证 job 全成功后才构建 linux/amd64 候选镜像,先验证 `/api/status`、默认设置引导与精确 VERSION,再推 GHCR 双 tag。仍保留有界 readiness 与 `gha scope=newapi-image,mode=max` 缓存,不改官方 Dockerfile。
 
-**本次云端状态:待 push 后记录实际 Actions 运行结果。尚未声称测试、数据库兼容或镜像发布已完成。** 镜像目标为 `ghcr.io/lisrain/new-api:v1.0.0-rc.51-1` 与 `v1.0.0-rc.51-1-<9位提交>`;精确数据库版本与 digest 以此次运行日志为准。
+**2026-11-17 云端结果:**提交 `ae85c4ed04e26484527fd54d50cfd27730b29e80` 的 [Actions 运行 `44039942372`](https://github.com/lisrain/new-api/actions/runs/44039942372) **首轮四个 job 全部 success**,结束于 `2026-11-17T07:49:04Z`,无需额外修码。根模块/relaykit/tokenkit vet/build/test 与定向流 race 通过;前端 typecheck、补丁 lint/格式、**235 个测试文件 / 2877 个测试用例**及生产构建通过。
+
+实测数据库为 **SQLite 3.50.4 / MySQL 8.0.46 / PostgreSQL 15.20**。三库矩阵与强制 PASS 检查、provider credential/scheduled 回归、MySQL/PostgreSQL row-lock 用例、rc39/rc49 两种基线各三库双启动升级及敏感词幂等迁移全部通过。
+
+候选镜像构建与 `/api/status` 冒烟通过后,已发布 `ghcr.io/lisrain/new-api:v1.0.0-rc.51-1` 和 `ghcr.io/lisrain/new-api:v1.0.0-rc.51-1-ae85c4ed0`,二者 digest 均为 **`sha256:08b8cf2fdca0856aee5d64149b554adcd996b7f74c6e88bb30053f7db169e0d8`**。此后仅文档提交可能触发同分支后续构建,版本 tag 的最终 digest 以最新提交的 Actions 记录为准;九位 SHA 追踪 tag 固定对应已验证提交。本地未运行测试或编译,生产 compose/容器未更新。
 
 ### 安全与下次升级
 
